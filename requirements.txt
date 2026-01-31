@@ -14,3 +14,4 @@ networkx==3.2.1
 openai==1.10.0
 python-dotenv==1.0.0
 litellm==1.17.0
+supabase==2.3.4

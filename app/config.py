@@ -5,6 +5,12 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # Default to a placeholder; user must set DATABASE_URL in env for Supabase
     database_url: str = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/sentinel")
+    
+    # Supabase Configuration
+    supabase_url: str = os.getenv("SUPABASE_URL", "")
+    supabase_key: str = os.getenv("SUPABASE_KEY", "")
+    supabase_service_key: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+    
     vault_salt: str = os.getenv("VAULT_SALT", "change-me-in-production-salt")
     encryption_key: str = os.getenv("ENCRYPTION_KEY", "change-me-to-32-byte-key-here!!")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
