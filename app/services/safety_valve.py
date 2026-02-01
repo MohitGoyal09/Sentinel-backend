@@ -24,9 +24,20 @@ class SafetyValve:
         
         if len(events) < 14:
             return {
+                "engine": "Safety Valve",
                 "status": "CALIBRATING", 
                 "risk_level": "INSUFFICIENT_DATA",
-                "days_collected": len(events)
+                "days_collected": len(events),
+                "velocity": 0.0,
+                "confidence": 0.0,
+                "belongingness_score": 0.0,
+                "circadian_entropy": 0.0,
+                "indicators": {
+                    "chaotic_hours": False,
+                    "social_withdrawal": False,
+                    "sustained_intensity": False,
+                    "has_explained_context": False
+                }
             }
         
         # NEW: Filter out explained late nights before calculating velocity

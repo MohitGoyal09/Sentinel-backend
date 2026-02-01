@@ -27,6 +27,8 @@ class SafetyValveData(BaseModel):
     belongingness_score: float
     circadian_entropy: float
     indicators: Dict[str, bool]
+    status: Optional[str] = "ACTIVE"
+    days_collected: Optional[int] = 0
 
 class TalentScoutPerformer(BaseModel):
     user_hash: str
