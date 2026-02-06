@@ -44,10 +44,23 @@ class CentralityScore(Base):
     """Talent Scout outputs"""
     __tablename__ = "centrality_scores"
     __table_args__ = {"schema": "analytics"}
-    
+
     user_hash = Column(String(64), primary_key=True)
     betweenness = Column(Float)  # How often they bridge disconnected groups
     eigenvector = Column(Float)  # Connected to important people
     unblocking_count = Column(Integer)
     knowledge_transfer_score = Column(Float)
     calculated_at = Column(DateTime, default=datetime.utcnow)
+
+class RiskHistory(Base):
+    """Historical risk score snapshots for timeline charts"""
+    __tablename__ = "risk_history"
+    __table_args__ = {"schema": "analytics"}
+
+    id = Column(Integer, primary_key=True)
+    user_hash = Column(String(64), index=True)
+    risk_level = Column(String(20))
+    velocity = Column(Float)
+    confidence = Column(Float)
+    belongingness_score = Column(Float, default=0.0)
+    timestamp = Column(DateTime, default=datetime.utcnow)

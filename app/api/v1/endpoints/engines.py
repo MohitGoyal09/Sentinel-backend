@@ -12,10 +12,11 @@ from app.api.deps import get_db
 from app.core.database import SessionLocal
 from app.schemas.engines import (
     CreatePersonaRequest, InjectEventRequest, AnalyzeTeamRequest,
-    SimulationResponse, SafetyValveResponse, TalentScoutResponse, 
-    CultureThermometerResponse, RealtimeInjectionResponse
+    SimulationResponse, SafetyValveResponse, TalentScoutResponse,
+    CultureThermometerResponse, RealtimeInjectionResponse,
+    UserListResponse, RiskHistoryResponse, NudgeResponse
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.context import ContextEnricher
 from typing import Optional
 from app.models.identity import UserIdentity
@@ -139,3 +140,98 @@ def inject_event(request: InjectEventRequest, db: Session = Depends(get_db)):
         success=True,
         data={"new_event": event_data, "updated_risk": result}
     )
+
+
+# ============ USER LISTING ============
+
+@router.get("/users", response_model=UserListResponse)
+def list_users(db: Session = Depends(get_db)):
+    """List all users with their current risk scores"""
+    from app.models.analytics import RiskScore
+    from app.models.identity import UserIdentity
+
+    users = db.query(UserIdentity).all()
+    result = []
+    for user in users:
+        risk = db.query(RiskScore).filter_by(user_hash=user.user_hash).first()
+        result.append({
+            "user_hash": user.user_hash,
+            "risk_level": risk.risk_level if risk else "CALIBRATING",
+            "velocity": risk.velocity if risk else 0.0,
+            "confidence": risk.confidence if risk else 0.0,
+            "updated_at": risk.updated_at.isoformat() if risk and risk.updated_at else None,
+        })
+    return UserListResponse(success=True, data=result)
+
+
+# ============ RISK HISTORY ============
+
+@router.get("/users/{user_hash}/history", response_model=RiskHistoryResponse)
+def get_risk_history(user_hash: str, days: int = 30, db: Session = Depends(get_db)):
+    """Get risk score history for timeline charts"""
+    from app.models.analytics import RiskHistory
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    history = db.query(RiskHistory).filter(
+        RiskHistory.user_hash == user_hash,
+        RiskHistory.timestamp >= cutoff
+    ).order_by(RiskHistory.timestamp.asc()).all()
+
+    result = [{
+        "timestamp": h.timestamp.isoformat(),
+        "risk_level": h.risk_level,
+        "velocity": h.velocity,
+        "confidence": h.confidence,
+        "belongingness_score": h.belongingness_score or 0.0,
+    } for h in history]
+
+    return RiskHistoryResponse(success=True, data=result)
+
+
+# ============ NUDGE ENDPOINT ============
+
+@router.get("/users/{user_hash}/nudge", response_model=NudgeResponse)
+def get_nudge(user_hash: str, db: Session = Depends(get_db)):
+    """Get a context-aware nudge recommendation for a user"""
+    from app.models.analytics import RiskScore
+
+    risk = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+    if not risk:
+        raise HTTPException(status_code=404, detail="No risk data found for user")
+
+    # Generate nudge based on risk level
+    if risk.risk_level == "CRITICAL":
+        nudge = {
+            "user_hash": user_hash,
+            "nudge_type": "urgent_wellbeing",
+            "message": "Your workload patterns suggest high stress levels. Consider taking a break or speaking with your manager about workload redistribution.",
+            "risk_level": risk.risk_level,
+            "actions": [
+                {"label": "Schedule 1:1", "action": "schedule_meeting"},
+                {"label": "Take Break", "action": "suggest_break"},
+                {"label": "Dismiss", "action": "dismiss"},
+            ]
+        }
+    elif risk.risk_level == "ELEVATED":
+        nudge = {
+            "user_hash": user_hash,
+            "nudge_type": "gentle_reminder",
+            "message": "We've noticed some changes in your work patterns. Remember to maintain work-life balance and take regular breaks.",
+            "risk_level": risk.risk_level,
+            "actions": [
+                {"label": "View Insights", "action": "view_insights"},
+                {"label": "Dismiss", "action": "dismiss"},
+            ]
+        }
+    else:
+        nudge = {
+            "user_hash": user_hash,
+            "nudge_type": "positive_reinforcement",
+            "message": "Great job maintaining healthy work patterns! Keep up the good balance.",
+            "risk_level": risk.risk_level,
+            "actions": [
+                {"label": "View Dashboard", "action": "view_dashboard"},
+            ]
+        }
+
+    return NudgeResponse(success=True, data=nudge)

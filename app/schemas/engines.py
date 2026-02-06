@@ -83,3 +83,37 @@ class SimulationResponse(APIResponse):
 
 class RealtimeInjectionResponse(APIResponse):
     data: Optional[RealtimeEventData] = None
+
+class UserSummary(BaseModel):
+    user_hash: str
+    risk_level: Optional[str] = None
+    velocity: Optional[float] = None
+    confidence: Optional[float] = None
+    updated_at: Optional[str] = None
+
+class UserListResponse(APIResponse):
+    data: Optional[List[UserSummary]] = None
+
+class RiskHistoryEntry(BaseModel):
+    timestamp: str
+    risk_level: str
+    velocity: float
+    confidence: float
+    belongingness_score: float
+
+class RiskHistoryResponse(APIResponse):
+    data: Optional[List[RiskHistoryEntry]] = None
+
+class NudgeAction(BaseModel):
+    label: str
+    action: str
+
+class NudgeData(BaseModel):
+    user_hash: str
+    nudge_type: str
+    message: str
+    risk_level: str
+    actions: List[NudgeAction]
+
+class NudgeResponse(APIResponse):
+    data: Optional[NudgeData] = None

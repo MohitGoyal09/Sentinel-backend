@@ -192,3 +192,15 @@ class SafetyValve:
         score.updated_at = datetime.utcnow()
         self.db.add(score)
         self.db.commit()
+
+        from app.models.analytics import RiskHistory
+        history = RiskHistory(
+            user_hash=user_hash,
+            risk_level=risk,
+            velocity=velocity,
+            confidence=confidence,
+            belongingness_score=belongingness,
+            timestamp=datetime.utcnow()
+        )
+        self.db.add(history)
+        self.db.commit()
