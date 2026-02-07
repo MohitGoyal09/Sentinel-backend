@@ -14,7 +14,17 @@ class CultureThermometer:
     def analyze_team(self, team_hashes: List[str]) -> Dict:
         """Detect resignation contagion risk"""
         if len(team_hashes) < 3:
-            return {"status": "INSUFFICIENT_TEAM_SIZE"}
+            return {
+                "engine": "Culture Thermometer",
+                "team_risk": "INSUFFICIENT_DATA",
+                "metrics": {
+                    "avg_velocity": 0.0,
+                    "critical_members": 0,
+                    "graph_fragmentation": 0.0,
+                    "comm_decay_rate": 0.0
+                },
+                "recommendation": "Add at least 3 members to analyze team culture."
+            }
         
         # 1. Aggregate sentiment velocity
         risks = self.db.query(RiskScore).filter(

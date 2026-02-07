@@ -37,9 +37,28 @@ class TalentScoutPerformer(BaseModel):
     unblocking: int
     is_hidden_gem: bool
 
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    risk_level: Optional[str] = "LOW"
+    betweenness: Optional[float] = 0.0
+    eigenvector: Optional[float] = 0.0
+    unblocking_count: Optional[int] = 0
+    is_hidden_gem: Optional[bool] = False
+    x: Optional[float] = 0.0
+    y: Optional[float] = 0.0
+    
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    weight: float
+    edge_type: str = "collaboration"
+
 class TalentScoutData(BaseModel):
     engine: str
     top_performers: List[TalentScoutPerformer]
+    nodes: Optional[List[GraphNode]] = []
+    edges: Optional[List[GraphEdge]] = []
 
 class CultureThermometerMetrics(BaseModel):
     avg_velocity: float
@@ -63,6 +82,8 @@ class EventData(BaseModel):
     timestamp: str
     event_type: str
     metadata: Dict[str, Any]
+    description: Optional[str] = None
+    risk_impact: Optional[str] = "neutral"
 
 class RealtimeEventData(BaseModel):
     new_event: EventData
@@ -86,6 +107,8 @@ class RealtimeInjectionResponse(APIResponse):
 
 class UserSummary(BaseModel):
     user_hash: str
+    name: Optional[str] = None
+    role: Optional[str] = "Engineer"
     risk_level: Optional[str] = None
     velocity: Optional[float] = None
     confidence: Optional[float] = None
@@ -103,6 +126,9 @@ class RiskHistoryEntry(BaseModel):
 
 class RiskHistoryResponse(APIResponse):
     data: Optional[List[RiskHistoryEntry]] = None
+
+class ActivityEventResponse(APIResponse):
+    data: Optional[List[EventData]] = None
 
 class NudgeAction(BaseModel):
     label: str

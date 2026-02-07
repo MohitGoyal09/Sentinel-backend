@@ -14,7 +14,8 @@ from app.schemas.engines import (
     CreatePersonaRequest, InjectEventRequest, AnalyzeTeamRequest,
     SimulationResponse, SafetyValveResponse, TalentScoutResponse,
     CultureThermometerResponse, RealtimeInjectionResponse,
-    UserListResponse, RiskHistoryResponse, NudgeResponse
+    UserListResponse, RiskHistoryResponse, NudgeResponse,
+    ActivityEventResponse
 )
 from datetime import datetime, timedelta
 from app.services.context import ContextEnricher
@@ -142,6 +143,34 @@ def inject_event(request: InjectEventRequest, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/events", response_model=ActivityEventResponse)
+def get_recent_events(limit: int = 50, db: Session = Depends(get_db)):
+    """Get recent activity stream for all users"""
+    events = db.query(Event).order_by(Event.timestamp.desc()).limit(limit).all()
+    
+    data = []
+    for e in events:
+        desc = f"Event {e.event_type}"
+        risk = "neutral"
+        # Try to extract from metadata if available
+        if e.metadata_:
+             if isinstance(e.metadata_, dict):
+                 if "description" in e.metadata_:
+                     desc = e.metadata_["description"]
+                 if "risk_impact" in e.metadata_:
+                     risk = e.metadata_["risk_impact"]
+        
+        data.append({
+            "user_hash": e.user_hash,
+            "timestamp": e.timestamp.isoformat(),
+            "event_type": e.event_type or "unknown",
+            "metadata": e.metadata_ or {},
+            "description": desc,
+            "risk_impact": risk
+        })
+    return ActivityEventResponse(success=True, data=data)
+
+
 # ============ USER LISTING ============
 
 @router.get("/users", response_model=UserListResponse)
@@ -153,9 +182,30 @@ def list_users(db: Session = Depends(get_db)):
     users = db.query(UserIdentity).all()
     result = []
     for user in users:
+        # Attempt to derive name from encrypted email
+        name = f"User {user.user_hash[:4]}"
+        role = "Engineer"
+        try:
+            # Try proper decryption
+            decrypted = privacy.decrypt(user.email_encrypted)
+            name = decrypted.split('@')[0].title()
+        except:
+            # Handle mock seeded data (fallback)
+            try:
+                raw = user.email_encrypted.decode()
+                if "encrypted_" in raw:
+                    name = raw.replace("encrypted_", "").split("@")[0].title()
+            except:
+                pass
+        
+        if "Alex" in name: role = "Senior Engineer"
+        if "Sarah" in name: role = "Tech Lead"
+
         risk = db.query(RiskScore).filter_by(user_hash=user.user_hash).first()
         result.append({
             "user_hash": user.user_hash,
+            "name": name,
+            "role": role,
             "risk_level": risk.risk_level if risk else "CALIBRATING",
             "velocity": risk.velocity if risk else 0.0,
             "confidence": risk.confidence if risk else 0.0,
@@ -196,6 +246,11 @@ def get_nudge(user_hash: str, db: Session = Depends(get_db)):
     from app.models.analytics import RiskScore
 
     risk = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+    if not risk:
+        # Trigger analysis if missing (e.g. fresh persona)
+        SafetyValve(db).analyze(user_hash)
+        risk = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+        
     if not risk:
         raise HTTPException(status_code=404, detail="No risk data found for user")
 

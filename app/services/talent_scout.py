@@ -23,10 +23,23 @@ class TalentScout:
             return {"status": "NO_DATA"}
         
         # Calculate metrics
+        # Calculate metrics
         betweenness = nx.betweenness_centrality(G, weight='weight')
-        eigenvector = nx.eigenvector_centrality(G, max_iter=1000, weight='weight')
+        try:
+            eigenvector = nx.eigenvector_centrality(G, max_iter=5000, weight='weight')
+        except (nx.PowerIterationFailedConvergence, Exception):
+            # Fallback to 0 if convergence fails
+            eigenvector = {node: 0.0 for node in G.nodes()}
         unblocking = self._calculate_unblocking_metrics(G)
         
+        # Calculate layout positions
+        # Center at (300, 210) to match frontend SVG viewBox 600x420
+        try:
+            pos = nx.spring_layout(G, center=(300, 210), scale=180, seed=42)
+        except:
+            # Fallback if layout fails (e.g. empty graph or circular dependencies)
+            pos = {n: (300, 210) for n in G.nodes()}
+
         results = []
         for user_hash in G.nodes():
             score_obj = CentralityScore(
@@ -45,15 +58,55 @@ class TalentScout:
                 "is_hidden_gem": self._is_hidden_gem(score_obj)
             })
         
+        # Build response nodes/edges
+        graph_nodes = []
+        # Import random for basic visualization variation if needed, or just static
+        import random
+        
+        for node in G.nodes():
+             bw = betweenness.get(node, 0)
+             ev = eigenvector.get(node, 0)
+             unb = unblocking.get(node, 0)
+             is_gem = (bw > 0.3 and unb > 5 and ev < 0.2)
+             
+             x_pos, y_pos = pos.get(node, (300, 210))
+
+             graph_nodes.append({
+                 "id": node, 
+                 "label": f"User_{node[:4]}", 
+                 "risk_level": "LOW",
+                 "betweenness": round(bw, 3),
+                 "eigenvector": round(ev, 3),
+                 "unblocking_count": unb,
+                 "is_hidden_gem": is_gem,
+                 "x": float(x_pos),
+                 "y": float(y_pos)
+             })
+        
+        graph_edges = []
+        for u, v, d in G.edges(data=True):
+             graph_edges.append({
+                 "source": u,
+                 "target": v,
+                 "weight": d.get('weight', 0),
+                 "edge_type": "collaboration"
+             })
+
         self.db.commit()
-        return {"engine": "Talent Scout", "top_performers": results[:5]}
+        return {
+            "engine": "Talent Scout", 
+            "top_performers": results[:5],
+            "nodes": graph_nodes,
+            "edges": graph_edges
+        }
     
     def _calculate_unblocking_metrics(self, G: nx.DiGraph) -> Dict:
         """Count how often someone's work enables others"""
         unblocking = {}
         for node in G.nodes():
             # Out-degree = helping others
-            unblocking[node] = G.out_degree(node, weight='weight')
+            # Cast to int as it's a "count" and schema expects int
+            unblocking[node] = int(round(G.out_degree(node, weight='weight')))
         return unblocking
     
     def _knowledge_transfer_score(self, user_hash: str) -> float:
