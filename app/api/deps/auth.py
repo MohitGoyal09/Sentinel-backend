@@ -1,0 +1,172 @@
+"""
+Authentication dependency for FastAPI endpoints.
+Verifies Supabase JWT tokens from Authorization header.
+"""
+
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from app.core.supabase import get_supabase_client
+from app.core.database import get_db
+from app.models.identity import UserIdentity
+from app.core.security import privacy
+from app.services.permission_service import PermissionService, UserRole
+
+security = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict:
+    """
+    Validate JWT token and return user data.
+
+    Usage:
+        @router.get("/protected")
+        def protected_route(user: dict = Depends(get_current_user)):
+            return {"user_id": user["id"]}
+    """
+    token = credentials.credentials
+
+    try:
+        supabase = get_supabase_client()
+        # Verify token by getting user - this validates the JWT
+        response = supabase.auth.get_user(token)
+
+        if not response or not response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token",
+            )
+
+        return {
+            "id": response.user.id,
+            "email": response.user.email,
+            "role": response.user.role,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}",
+        )
+
+
+def get_current_user_identity(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> UserIdentity:
+    """
+    Get the current user's identity from the database (Vault B).
+    This includes their RBAC role and permissions.
+    """
+    token = credentials.credentials
+
+    try:
+        supabase = get_supabase_client()
+        response = supabase.auth.get_user(token)
+
+        if not response or not response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token",
+            )
+
+        # Get user hash from email
+        user_hash = privacy.hash_identity(response.user.email)
+
+        # Fetch full identity from database
+        user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+
+        if not user:
+            # User exists in Supabase but not in our database yet
+            # Create identity record
+            user = UserIdentity(
+                user_hash=user_hash,
+                email_encrypted=privacy.encrypt(response.user.email),
+                role=UserRole.EMPLOYEE.value,  # Default role
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        return user
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}",
+        )
+
+
+def get_permission_service(db: Session = Depends(get_db)) -> PermissionService:
+    """
+    Get the permission service for RBAC checks.
+    """
+    return PermissionService(db)
+
+
+def require_role(*roles: str):
+    """
+    Dependency factory to require specific roles.
+
+    Usage:
+        @router.get("/admin-only")
+        def admin_route(
+            user: UserIdentity = Depends(require_role("admin"))
+        ):
+            return {"message": "Admin access granted"}
+    """
+
+    def role_checker(
+        user: UserIdentity = Depends(get_current_user_identity),
+    ) -> UserIdentity:
+        if user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required roles: {', '.join(roles)}",
+            )
+        return user
+
+    return role_checker
+
+
+def check_permission_to_view_user(
+    target_user_hash: str,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    permission_service: PermissionService = Depends(get_permission_service),
+) -> tuple[UserIdentity, bool, str]:
+    """
+    Check if current user has permission to view target user's data.
+    Returns (current_user, can_view, reason)
+
+    Usage:
+        @router.get("/users/{user_hash}/data")
+        def get_user_data(
+            user_hash: str,
+            permission_check: tuple = Depends(check_permission_to_view_user)
+        ):
+            current_user, can_view, reason = permission_check
+            if not can_view:
+                raise HTTPException(status_code=403, detail=reason)
+            # ... proceed with fetching data
+    """
+    can_view, reason = permission_service.can_view_user_data(
+        current_user, target_user_hash
+    )
+
+    # Log the access attempt
+    permission_service.log_data_access(
+        accessor_hash=current_user.user_hash,
+        target_hash=target_user_hash,
+        action="view_attempt",
+        details={
+            "granted": can_view,
+            "reason": reason,
+            "current_user_role": current_user.role,
+        },
+    )
+
+    return current_user, can_view, reason
