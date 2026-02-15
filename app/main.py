@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,6 +7,7 @@ from app.core.database import engine
 from app.models.analytics import Base as AnalyticsBase
 from app.models.identity import Base as IdentityBase
 from app.api.v1.api import api_router
+from app.config import get_settings
 
 # Create schemas if they don't exist
 # Note: Production should use Alembic migrations
@@ -13,11 +16,16 @@ IdentityBase.metadata.create_all(engine)
 
 app = FastAPI(title="Sentinel - Three Engine System")
 
+# Read allowed origins from Settings (sourced from .env ALLOWED_ORIGINS)
+settings = get_settings()
+allowed_origins = [origin.strip() for origin in settings.allowed_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 from app.api.websocket import router as ws_router

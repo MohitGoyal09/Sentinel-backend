@@ -18,5 +18,8 @@ supabase==2.3.4
 
 # Integrations
 slack-sdk==3.27.0
-httpx==0.26.0
+httpx>=0.26,<0.29
+gotrue>=2.12.0
+supabase>=2.10.0
+websockets>=13.0,<16.0
 redis==5.0.1

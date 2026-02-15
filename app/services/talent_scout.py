@@ -33,7 +33,7 @@ class TalentScout:
         # Center at (300, 210) to match frontend SVG viewBox 600x420
         try:
             pos = nx.spring_layout(G, center=(300, 210), scale=180, seed=42)
-        except:
+        except Exception:
             # Fallback if layout fails (e.g. empty graph or circular dependencies)
             pos = {n: (300, 210) for n in G.nodes()}
 

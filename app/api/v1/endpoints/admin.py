@@ -23,7 +23,7 @@ from app.services.permission_service import PermissionService
 router = APIRouter()
 
 
-@router.get("/admin/health", response_model=dict)
+@router.get("/health", response_model=dict)
 def get_system_health(
     current_user: UserIdentity = Depends(require_role("admin")),
     db: Session = Depends(get_db),
@@ -115,7 +115,7 @@ def get_system_health(
     }
 
 
-@router.get("/admin/audit-logs", response_model=dict)
+@router.get("/audit-logs", response_model=dict)
 def get_system_audit_logs(
     days: int = 7,
     action_type: Optional[str] = None,
@@ -181,7 +181,7 @@ def get_system_audit_logs(
     }
 
 
-@router.get("/admin/users", response_model=dict)
+@router.get("/users", response_model=dict)
 def get_all_users(
     role: Optional[str] = None,
     limit: int = 50,
@@ -239,7 +239,7 @@ def get_all_users(
     }
 
 
-@router.get("/admin/statistics", response_model=dict)
+@router.get("/statistics", response_model=dict)
 def get_system_statistics(
     days: int = 30,
     current_user: UserIdentity = Depends(require_role("admin")),
@@ -318,7 +318,7 @@ def get_system_statistics(
     }
 
 
-@router.post("/admin/user/{user_hash}/role")
+@router.post("/user/{user_hash}/role")
 def update_user_role(
     user_hash: str,
     new_role: str,
@@ -369,7 +369,7 @@ def update_user_role(
     }
 
 
-@router.post("/admin/user/{user_hash}/manager")
+@router.post("/user/{user_hash}/manager")
 def assign_manager(
     user_hash: str,
     manager_hash: str,
@@ -428,7 +428,7 @@ def assign_manager(
     }
 
 
-@router.get("/admin/config", response_model=dict)
+@router.get("/config", response_model=dict)
 def get_system_config(current_user: UserIdentity = Depends(require_role("admin"))):
     """
     Get current system configuration.

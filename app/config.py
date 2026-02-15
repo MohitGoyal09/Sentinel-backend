@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
     supabase_service_key: str = os.getenv("SUPABASE_SERVICE_KEY", "")
     
-    vault_salt: str = os.getenv("VAULT_SALT", "change-me-in-production-salt")
-    encryption_key: str = os.getenv("ENCRYPTION_KEY", "change-me-to-32-byte-key-here!!")
+    vault_salt: str = os.getenv("VAULT_SALT", "")
+    encryption_key: str = os.getenv("ENCRYPTION_KEY", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
     
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     simulation_mode: bool = True
     data_retention_days: int = 90
+    allowed_origins: str = "http://localhost:3000,http://localhost:3001"
 
     class Config:
         env_file = ".env"

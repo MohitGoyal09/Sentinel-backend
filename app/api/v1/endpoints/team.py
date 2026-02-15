@@ -41,7 +41,7 @@ def get_team_members(db: Session, manager_hash: str) -> List[UserIdentity]:
     )
 
 
-@router.get("/team", response_model=dict)
+@router.get("/", response_model=dict)
 def get_my_team_dashboard(
     current_user: UserIdentity = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
@@ -159,7 +159,7 @@ def get_my_team_dashboard(
     }
 
 
-@router.get("/team/member/{user_hash}", response_model=dict)
+@router.get("/member/{user_hash}", response_model=dict)
 def get_team_member_details(
     user_hash: str,
     current_user: UserIdentity = Depends(require_role("manager", "admin")),
@@ -281,7 +281,7 @@ def get_team_member_details(
     }
 
 
-@router.get("/team/analytics", response_model=dict)
+@router.get("/analytics", response_model=dict)
 def get_team_analytics(
     days: int = 30,
     current_user: UserIdentity = Depends(require_role("manager", "admin")),
@@ -386,7 +386,7 @@ def get_team_analytics(
     }
 
 
-@router.get("/team/network", response_model=dict)
+@router.get("/network", response_model=dict)
 def get_team_network(
     current_user: UserIdentity = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
@@ -465,7 +465,7 @@ def get_team_network(
     }
 
 
-@router.post("/team/send-nudge/{user_hash}")
+@router.post("/send-nudge/{user_hash}")
 def send_wellness_nudge(
     user_hash: str,
     message: Optional[str] = None,

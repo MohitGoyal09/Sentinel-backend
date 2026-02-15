@@ -8,4 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environment files (keep .env.example)
 .env
+.env.*
+!.env.example
+
+# Test artifacts
+test_results.txt
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from typing import Optional
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
@@ -23,7 +24,13 @@ from app.schemas.engines import SafetyValveResponse
 router = APIRouter()
 
 
-@router.get("/me", response_model=dict)
+class ConsentUpdate(BaseModel):
+    """Request body for updating consent settings."""
+    consent_share_with_manager: Optional[bool] = None
+    consent_share_anonymized: Optional[bool] = None
+
+
+@router.get("/", response_model=dict)
 def get_my_profile(
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
@@ -99,7 +106,7 @@ def get_my_profile(
     }
 
 
-@router.get("/me/risk-history", response_model=list)
+@router.get("/risk-history", response_model=list)
 def get_my_risk_history(
     days: int = 30,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -137,10 +144,9 @@ def get_my_risk_history(
     ]
 
 
-@router.put("/me/consent")
+@router.put("/consent")
 def update_my_consent(
-    consent_share_with_manager: Optional[bool] = None,
-    consent_share_anonymized: Optional[bool] = None,
+    body: ConsentUpdate,
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
 ):
@@ -156,20 +162,20 @@ def update_my_consent(
     # Track changes for audit log
     changes = {}
 
-    if consent_share_with_manager is not None:
+    if body.consent_share_with_manager is not None:
         old_value = current_user.consent_share_with_manager
-        current_user.consent_share_with_manager = consent_share_with_manager
+        current_user.consent_share_with_manager = body.consent_share_with_manager
         changes["consent_share_with_manager"] = {
             "old": old_value,
-            "new": consent_share_with_manager,
+            "new": body.consent_share_with_manager,
         }
 
-    if consent_share_anonymized is not None:
+    if body.consent_share_anonymized is not None:
         old_value = current_user.consent_share_anonymized
-        current_user.consent_share_anonymized = consent_share_anonymized
+        current_user.consent_share_anonymized = body.consent_share_anonymized
         changes["consent_share_anonymized"] = {
             "old": old_value,
-            "new": consent_share_anonymized,
+            "new": body.consent_share_anonymized,
         }
 
     if not changes:
@@ -197,7 +203,7 @@ def update_my_consent(
     }
 
 
-@router.post("/me/pause-monitoring")
+@router.post("/pause-monitoring")
 def pause_my_monitoring(
     hours: int = 24,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -260,7 +266,7 @@ def pause_my_monitoring(
     }
 
 
-@router.post("/me/resume-monitoring")
+@router.post("/resume-monitoring")
 def resume_my_monitoring(
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
@@ -285,7 +291,7 @@ def resume_my_monitoring(
     return {"message": "Monitoring resumed", "was_paused": was_paused}
 
 
-@router.delete("/me/data")
+@router.delete("/data")
 def delete_my_data(
     confirm: bool = False,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -352,7 +358,7 @@ def delete_my_data(
         )
 
 
-@router.get("/me/audit-trail")
+@router.get("/audit-trail")
 def get_my_audit_trail(
     days: int = 30,
     current_user: UserIdentity = Depends(get_current_user_identity),

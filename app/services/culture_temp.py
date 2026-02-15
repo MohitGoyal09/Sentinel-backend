@@ -78,7 +78,7 @@ class CultureThermometer:
         try:
             clustering = nx.average_clustering(G)
             return 1.0 - clustering  # Invert so higher = worse
-        except:
+        except Exception:
             return 1.0
     
     def _communication_decay(self, team_hashes: List[str]) -> float:

@@ -1,10 +1,15 @@
 """
 Seed script to create test users with different roles for RBAC testing.
 Run this after migration to set up test accounts.
+
+Passwords are read from SEED_PASSWORD env var.
+If not set a random password is generated and printed once.
 """
 
 import os
 import sys
+import secrets
+import string
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,6 +19,18 @@ from app.config import get_settings
 from app.core.security import privacy
 from app.models.identity import UserIdentity, AuditLog
 from datetime import datetime
+
+
+def _get_seed_password() -> str:
+    """Read SEED_PASSWORD from env or generate one."""
+    pw = os.getenv("SEED_PASSWORD", "")
+    if pw:
+        return pw
+    alphabet = string.ascii_letters + string.digits + "!@#$%"
+    pw = "".join(secrets.choice(alphabet) for _ in range(16))
+    print(f"  [WARN] SEED_PASSWORD not set. Generated: {pw}")
+    print(f"         Set SEED_PASSWORD in .env to use a fixed password.\n")
+    return pw
 
 
 def create_test_users():
@@ -26,11 +43,12 @@ def create_test_users():
     print("CREATING TEST USERS FOR RBAC TESTING")
     print("=" * 70)
 
+    seed_password = _get_seed_password()
+
     # Define test users with their roles and relationships
     test_users = [
         {
             "email": "admin@sentinel.local",
-            "password": "Admin123!",
             "role": "admin",
             "manager_email": None,
             "consent_share_with_manager": False,
@@ -38,7 +56,6 @@ def create_test_users():
         },
         {
             "email": "manager1@sentinel.local",
-            "password": "Manager123!",
             "role": "manager",
             "manager_email": None,
             "consent_share_with_manager": False,
@@ -46,7 +63,6 @@ def create_test_users():
         },
         {
             "email": "manager2@sentinel.local",
-            "password": "Manager456!",
             "role": "manager",
             "manager_email": None,
             "consent_share_with_manager": False,
@@ -54,23 +70,20 @@ def create_test_users():
         },
         {
             "email": "employee1@sentinel.local",
-            "password": "Employee123!",
             "role": "employee",
             "manager_email": "manager1@sentinel.local",
-            "consent_share_with_manager": True,  # Consented to share with manager
+            "consent_share_with_manager": True,
             "description": "Senior Developer - Can view own data, has consented to share with manager",
         },
         {
             "email": "employee2@sentinel.local",
-            "password": "Employee456!",
             "role": "employee",
             "manager_email": "manager1@sentinel.local",
-            "consent_share_with_manager": False,  # Has NOT consented
+            "consent_share_with_manager": False,
             "description": "Junior Developer - Can view own data, has NOT consented to share",
         },
         {
             "email": "employee3@sentinel.local",
-            "password": "Employee789!",
             "role": "employee",
             "manager_email": "manager2@sentinel.local",
             "consent_share_with_manager": False,
@@ -111,7 +124,6 @@ def create_test_users():
                 created_users.append(
                     {
                         "email": email,
-                        "password": user_data["password"],
                         "role": user_data["role"],
                         "user_hash": user_hash,
                         "description": user_data["description"],
@@ -160,7 +172,6 @@ def create_test_users():
                 created_users.append(
                     {
                         "email": email,
-                        "password": user_data["password"],
                         "role": user_data["role"],
                         "user_hash": user_hash,
                         "description": user_data["description"],
@@ -179,12 +190,13 @@ def create_test_users():
 
         for user in created_users:
             print(f"Email: {user['email']}")
-            print(f"   Password: {user['password']}")
             print(f"   Role: {user['role'].upper()}")
             print(f"   Description: {user['description']}")
             print(f"   User Hash: {user['user_hash']}")
             print(f"   Status: {user['status']}")
             print("-" * 70)
+
+        print(f"\nPassword for all users: (the SEED_PASSWORD you provided)")
 
         print("\n" + "=" * 70)
         print("MANAGER-EMPLOYEE RELATIONSHIPS")
@@ -233,31 +245,7 @@ Test these scenarios after implementation:
    - Manager2 should see employee3 details even without consent
 """)
 
-        # Save documentation to file
-        doc_path = os.path.join(os.path.dirname(__file__), "..", "TEST_USERS.md")
-        with open(doc_path, "w") as f:
-            f.write("# Test Users for RBAC Implementation\n\n")
-            f.write("## Credentials\n\n")
-            for user in created_users:
-                f.write(f"### {user['role'].upper()}: {user['email']}\n")
-                f.write(f"- **Password:** `{user['password']}`\n")
-                f.write(f"- **Role:** {user['role']}\n")
-                f.write(f"- **Description:** {user['description']}\n")
-                f.write(f"- **User Hash:** `{user['user_hash']}`\n")
-                f.write(f"- **Status:** {user['status']}\n\n")
-
-            f.write("## Organization Structure\n\n")
-            f.write("```\n")
-            f.write("Admin: admin@sentinel.local\n")
-            f.write("└─ Full system access\n\n")
-            f.write("Manager 1: manager1@sentinel.local\n")
-            f.write("├─ employee1@sentinel.local (CONSENTED)\n")
-            f.write("└─ employee2@sentinel.local (NOT consented)\n\n")
-            f.write("Manager 2: manager2@sentinel.local\n")
-            f.write("└─ employee3@sentinel.local (NOT consented)\n")
-            f.write("```\n")
-
-        print(f"\n[SUCCESS] Documentation saved to: {doc_path}")
+        # NOTE: No longer writing TEST_USERS.md to avoid leaking passwords to VCS
         print("=" * 70)
 
         return True

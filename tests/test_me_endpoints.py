@@ -14,6 +14,7 @@ from app.api.v1.endpoints.me import (
     pause_my_monitoring,
     resume_my_monitoring,
     delete_my_data,
+    ConsentUpdate,
 )
 from app.models.identity import UserIdentity, AuditLog
 from app.models.analytics import RiskScore, RiskHistory
@@ -80,9 +81,9 @@ class TestMeEndpoints:
 
         def test_updates_manager_consent(self, mock_db, employee_user):
             """Should update consent_share_with_manager"""
+            body = ConsentUpdate(consent_share_with_manager=True)
             result = update_my_consent(
-                consent_share_with_manager=True,
-                consent_share_anonymized=None,
+                body=body,
                 current_user=employee_user,
                 db=mock_db,
             )
@@ -93,9 +94,9 @@ class TestMeEndpoints:
 
         def test_updates_anonymized_consent(self, mock_db, employee_user):
             """Should update consent_share_anonymized"""
+            body = ConsentUpdate(consent_share_anonymized=False)
             result = update_my_consent(
-                consent_share_with_manager=None,
-                consent_share_anonymized=False,
+                body=body,
                 current_user=employee_user,
                 db=mock_db,
             )
@@ -106,9 +107,9 @@ class TestMeEndpoints:
         def test_rejects_no_changes(self, mock_db, employee_user):
             """Should reject request if no consent settings provided"""
             with pytest.raises(HTTPException) as exc_info:
+                body = ConsentUpdate()
                 update_my_consent(
-                    consent_share_with_manager=None,
-                    consent_share_anonymized=None,
+                    body=body,
                     current_user=employee_user,
                     db=mock_db,
                 )
