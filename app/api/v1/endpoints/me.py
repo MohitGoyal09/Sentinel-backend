@@ -23,7 +23,7 @@ from app.schemas.engines import SafetyValveResponse
 router = APIRouter()
 
 
-@router.get("/me", response_model=dict)
+@router.get("/", response_model=dict)
 def get_my_profile(
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
@@ -99,7 +99,7 @@ def get_my_profile(
     }
 
 
-@router.get("/me/risk-history", response_model=list)
+@router.get("/risk-history", response_model=list)
 def get_my_risk_history(
     days: int = 30,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -131,13 +131,13 @@ def get_my_risk_history(
             "velocity": h.velocity,
             "risk_level": h.risk_level,
             "confidence": h.confidence,
-            "thwarted_belongingness": h.thwarted_belongingness,
+            "thwarted_belongingness": h.belongingness_score,
         }
         for h in history
     ]
 
 
-@router.put("/me/consent")
+@router.put("/consent")
 def update_my_consent(
     consent_share_with_manager: Optional[bool] = None,
     consent_share_anonymized: Optional[bool] = None,
@@ -197,7 +197,7 @@ def update_my_consent(
     }
 
 
-@router.post("/me/pause-monitoring")
+@router.post("/pause-monitoring")
 def pause_my_monitoring(
     hours: int = 24,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -260,7 +260,7 @@ def pause_my_monitoring(
     }
 
 
-@router.post("/me/resume-monitoring")
+@router.post("/resume-monitoring")
 def resume_my_monitoring(
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
@@ -285,7 +285,7 @@ def resume_my_monitoring(
     return {"message": "Monitoring resumed", "was_paused": was_paused}
 
 
-@router.delete("/me/data")
+@router.delete("/data")
 def delete_my_data(
     confirm: bool = False,
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -352,7 +352,7 @@ def delete_my_data(
         )
 
 
-@router.get("/me/audit-trail")
+@router.get("/audit-trail")
 def get_my_audit_trail(
     days: int = 30,
     current_user: UserIdentity = Depends(get_current_user_identity),
