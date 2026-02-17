@@ -1,7 +1,9 @@
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.database import engine
 from app.models.analytics import Base as AnalyticsBase
@@ -20,10 +22,64 @@ app = FastAPI(title="Sentinel - Three Engine System")
 # TODO: Restrict in production via ALLOWED_ORIGINS env var
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Ensure unhandled exceptions still return CORS-friendly JSON responses."""
+    import traceback
+
+    traceback.print_exc()
+
+    # Add CORS headers to error responses
+    headers = {
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+
+    # Handle preflight requests
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            status_code=200,
+            content={},
+            headers=headers,
+        )
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+        headers=headers,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Ensure HTTP exceptions (401, 403, etc.) return CORS-friendly responses."""
+    headers = {
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+
+    # Merge with existing headers from the exception if any
+    if exc.headers:
+        headers.update(exc.headers)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
+    )
+
 
 from app.api.websocket import router as ws_router
 

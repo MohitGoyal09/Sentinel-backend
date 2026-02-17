@@ -16,7 +16,7 @@ from collections import defaultdict
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
-from app.models.analytics import RiskScore, RiskHistory, GraphEdge, Event
+from app.models.analytics import RiskScore, RiskHistory, GraphEdge, Event, SkillProfile
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService
 
@@ -51,17 +51,17 @@ def get_my_team_dashboard(
 ):
     """
     Get team dashboard.
-    
+
     Admins can:
     - View all employees (Global View) if view_as is None
     - View specific manager's team if view_as={manager_hash}
-    
+
     Managers:
     - Only view their direct reports
     """
     target_manager_hash = current_user.user_hash
     is_global_view = False
-    
+
     # Permission Logic
     if current_user.role == "admin":
         if view_as:
@@ -70,24 +70,23 @@ def get_my_team_dashboard(
             is_global_view = True
     elif view_as and view_as != current_user.user_hash:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Managers can only view their own team"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Managers can only view their own team",
         )
-        
+
     # Query Data
     if is_global_view:
         # Admin Global View - All Users
         total_count = db.query(UserIdentity).count()
-        team_members = (
-            db.query(UserIdentity)
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
+        team_members = db.query(UserIdentity).offset(skip).limit(limit).all()
         dashboard_title = "Organization Overview"
     else:
         # Manager Specific View
-        total_count = db.query(UserIdentity).filter(UserIdentity.manager_hash == target_manager_hash).count()
+        total_count = (
+            db.query(UserIdentity)
+            .filter(UserIdentity.manager_hash == target_manager_hash)
+            .count()
+        )
         team_members = (
             db.query(UserIdentity)
             .filter(UserIdentity.manager_hash == target_manager_hash)
@@ -104,7 +103,7 @@ def get_my_team_dashboard(
                 "member_count": 0,
                 "message": "No team members assigned",
                 "is_global_view": False,
-                "total_pages": 0
+                "total_pages": 0,
             },
             "metrics": None,
             "risk_distribution": {},
@@ -113,7 +112,12 @@ def get_my_team_dashboard(
 
     # Get risk scores for visible members
     member_hashes = [m.user_hash for m in team_members]
-    risk_scores = db.query(RiskScore).filter(RiskScore.user_hash.in_(member_hashes)).all()
+    risk_scores = (
+        db.query(RiskScore).filter(RiskScore.user_hash.in_(member_hashes)).all()
+    )
+
+    # Convert risk scores to dicts to avoid SQLAlchemy serialization issues
+    risk_scores_dict = {r.user_hash: {"risk_level": r.risk_level} for r in risk_scores}
 
     # Build anonymized member list
     anonymized_members = []
@@ -125,28 +129,30 @@ def get_my_team_dashboard(
         pseudonym = anonymize_user_hash(member.user_hash, global_idx)
         hash_to_pseudonym[member.user_hash] = pseudonym
 
-        # Get member's risk score
-        risk = next((r for r in risk_scores if r.user_hash == member.user_hash), None)
+        # Get member's risk score from dict
+        risk = risk_scores_dict.get(member.user_hash)
 
         # Determine if viewer can see real identity
         # Admin can always see identity in global view? Maybe restricting for privacy demo.
         # Let's respect consent even for Admins in this demo unless 'emergency' override
-        can_identify = member.consent_share_with_manager or current_user.role == "admin"
+        can_identify = (
+            bool(member.consent_share_with_manager) or current_user.role == "admin"
+        )
 
         anonymized_members.append(
             {
                 "pseudonym": pseudonym,
                 "is_identified": can_identify,
-                "real_hash": member.user_hash if can_identify else None,
-                "risk_level": risk.risk_level if risk else "CALIBRATING",
-                "has_consent": member.consent_share_with_manager,
-                "department": "Unknown"  # UserIdentity model has no metadata JSON column
+                "real_hash": str(member.user_hash) if can_identify else None,
+                "risk_level": risk["risk_level"] if risk else "CALIBRATING",
+                "has_consent": bool(member.consent_share_with_manager),
+                "department": "Unknown",  # UserIdentity model has no metadata JSON column
             }
         )
 
-    # Calculate metrics (Only for current page in global view to avoid heavy query, 
+    # Calculate metrics (Only for current page in global view to avoid heavy query,
     # OR do a separate aggregate query for accurate total stats)
-    
+
     if is_global_view:
         # Global Aggregates (Efficient query)
         risk_counts = (
@@ -154,20 +160,30 @@ def get_my_team_dashboard(
             .group_by(RiskScore.risk_level)
             .all()
         )
-        risk_dist_map = dict(risk_counts)
-        consent_total = db.query(UserIdentity).filter(UserIdentity.consent_share_with_manager == True).count()
+        risk_dist_map = {str(level): int(count) for level, count in risk_counts}
+        consent_total = (
+            db.query(UserIdentity)
+            .filter(UserIdentity.consent_share_with_manager == True)
+            .count()
+        )
         total_employees = total_count
     else:
         # Team Specific Aggregates
-        team_hashes_all = [m.user_hash for m in get_team_members(db, target_manager_hash)]
+        team_hashes_all = [
+            str(m.user_hash) for m in get_team_members(db, target_manager_hash)
+        ]
         risk_counts = (
             db.query(RiskScore.risk_level, func.count(RiskScore.risk_level))
             .filter(RiskScore.user_hash.in_(team_hashes_all))
             .group_by(RiskScore.risk_level)
             .all()
         )
-        risk_dist_map = dict(risk_counts)
-        consent_total = sum(1 for m in get_team_members(db, target_manager_hash) if m.consent_share_with_manager)
+        risk_dist_map = {str(level): int(count) for level, count in risk_counts}
+        consent_total = sum(
+            1
+            for m in get_team_members(db, target_manager_hash)
+            if bool(m.consent_share_with_manager)
+        )
         total_employees = len(team_hashes_all)
 
     risk_distribution = {
@@ -190,12 +206,28 @@ def get_my_team_dashboard(
     anonymized_events = []
     for event in recent_events:
         pseudonym = hash_to_pseudonym.get(event.user_hash, "Unknown")
+        # Use metadata_ which is the actual column name (metadata is SQLAlchemy's MetaData)
+        event_metadata = None
+        try:
+            event_metadata = event.metadata_
+        except AttributeError:
+            pass
         anonymized_events.append(
             {
                 "pseudonym": pseudonym,
-                "event_type": event.event_type,
-                "timestamp": event.timestamp.isoformat(),
-                "metadata": event.metadata,
+                "event_type": str(event.event_type) if event.event_type else None,
+                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+                "metadata": event_metadata,
+            }
+        )
+        if event_metadata is None and hasattr(event, "metadata"):
+            event_metadata = event.metadata
+        anonymized_events.append(
+            {
+                "pseudonym": pseudonym,
+                "event_type": str(event.event_type) if event.event_type else None,
+                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+                "metadata": event_metadata,
             }
         )
 
@@ -207,11 +239,12 @@ def get_my_team_dashboard(
             "total_count": total_count,
             "page": (skip // limit) + 1,
             "is_global_view": is_global_view,
-            "title": dashboard_title
+            "title": dashboard_title,
         },
         "metrics": {
             "total_members": total_employees,
-            "at_risk_count": risk_distribution["ELEVATED"] + risk_distribution["CRITICAL"],
+            "at_risk_count": risk_distribution["ELEVATED"]
+            + risk_distribution["CRITICAL"],
             "critical_count": risk_distribution["CRITICAL"],
             "consent_rate": f"{consent_total}/{total_employees}",
         },
@@ -220,7 +253,9 @@ def get_my_team_dashboard(
             "total": total_employees,
             "consented": consent_total,
             "not_consented": total_employees - consent_total,
-            "percentage": round((consent_total / total_employees) * 100, 1) if total_employees else 0,
+            "percentage": round((consent_total / total_employees) * 100, 1)
+            if total_employees
+            else 0,
         },
         "recent_events": anonymized_events,
     }
@@ -311,37 +346,51 @@ def get_team_member_details(
         .all()
     )
 
+    # Get skills profile (create default if doesn't exist)
+    skills = db.query(SkillProfile).filter_by(user_hash=user_hash).first()
+    if not skills:
+        # Create default skills profile
+        skills = SkillProfile(user_hash=user_hash)
+        db.add(skills)
+        db.commit()
+        db.refresh(skills)
+
     return {
         "access": "granted",
         "reason": reason,
         "employee": {
             "user_hash": user_hash,
             "is_identified": True,
-            "consent": employee.consent_share_with_manager,
+            "consent": bool(employee.consent_share_with_manager),
             "monitoring_paused": employee.monitoring_paused_until is not None,
         },
         "risk": {
             "current_level": risk_score.risk_level if risk_score else "CALIBRATING",
-            "velocity": risk_score.velocity if risk_score else None,
-            "confidence": risk_score.confidence if risk_score else 0,
-            "thwarted_belongingness": risk_score.thwarted_belongingness
-            if risk_score
+            "velocity": float(risk_score.velocity)
+            if risk_score and risk_score.velocity
+            else None,
+            "confidence": float(risk_score.confidence)
+            if risk_score and risk_score.confidence
+            else 0,
+            "thwarted_belongingness": float(risk_score.thwarted_belongingness)
+            if risk_score and risk_score.thwarted_belongingness
             else None,
             "updated_at": risk_score.updated_at.isoformat() if risk_score else None,
         },
+        "skills": skills.to_dict() if skills else None,
         "history": [
             {
-                "timestamp": h.timestamp.isoformat(),
-                "risk_level": h.risk_level,
-                "velocity": h.velocity,
+                "timestamp": h.timestamp.isoformat() if h.timestamp else None,
+                "risk_level": str(h.risk_level) if h.risk_level else None,
+                "velocity": float(h.velocity) if h.velocity else None,
             }
             for h in history
         ],
         "recent_events": [
             {
-                "timestamp": e.timestamp.isoformat(),
-                "event_type": e.event_type,
-                "metadata": e.metadata,
+                "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                "event_type": str(e.event_type) if e.event_type else None,
+                "metadata": e.metadata_ if hasattr(e, "metadata_") else None,
             }
             for e in events
         ],

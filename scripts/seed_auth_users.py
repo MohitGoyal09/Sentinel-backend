@@ -5,6 +5,7 @@ This is needed so users can log in via the frontend.
 Passwords are read from the SEED_PASSWORD environment variable.
 If not set, a secure random password is generated and printed once.
 """
+
 import os
 import sys
 import json
@@ -42,23 +43,25 @@ def _get_seed_password() -> str:
 
 
 TEST_EMAILS = [
-    "admin@sentinel.local",
-    "manager1@sentinel.local",
-    "manager2@sentinel.local",
-    "employee1@sentinel.local",
-    "employee2@sentinel.local",
-    "employee3@sentinel.local",
+    "admin_user@company.com",
+    "manager_one@company.com",
+    "manager_two@company.com",
+    "alex.chen@company.com",
+    "sarah.jones@company.com",
+    "jordan.smith@company.com",
 ]
 
 
 def create_auth_user(email, password):
     """Create a user in Supabase Auth via the admin API."""
     url = f"{SUPABASE_URL}/auth/v1/admin/users"
-    body = json.dumps({
-        "email": email,
-        "password": password,
-        "email_confirm": True,
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "email": email,
+            "password": password,
+            "email_confirm": True,
+        }
+    ).encode("utf-8")
 
     headers = {
         "Content-Type": "application/json",
@@ -106,7 +109,9 @@ def main():
     print("=" * 60)
 
     if success == len(TEST_EMAILS):
-        print("\nAll test users are ready! You can now log in at http://localhost:3000/login")
+        print(
+            "\nAll test users are ready! You can now log in at http://localhost:3000/login"
+        )
         print("\nEmails:")
         for email in TEST_EMAILS:
             print(f"  {email}")

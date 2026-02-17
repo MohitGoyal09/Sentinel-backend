@@ -298,7 +298,10 @@ def get_nudge(
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
-    """Generate a personalized nudge for a user based on their risk profile"""
+    """Generate a personalized LLM-based nudge for a user based on their risk profile"""
+    from app.services.llm import llm_service
+    from app.models.identity import UserIdentity as IdentityModel
+
     # RBAC Check: Verify user has permission to access this data
     check_user_data_access(db, current_user, user_hash)
 
@@ -306,41 +309,155 @@ def get_nudge(
     analysis = engine.analyze(user_hash)
 
     risk_level = analysis.get("risk_level", "LOW")
+    velocity = analysis.get("velocity", 0)
+    belongingness = analysis.get("belongingness_score", 0.5)
+    indicators = analysis.get("indicators", {})
 
-    # Build nudge based on risk analysis
+    # Get user info for personalization
+    user_identity = db.query(IdentityModel).filter_by(user_hash=user_hash).first()
+    user_name = "there"
+    if user_identity:
+        from app.core.security import privacy
+
+        try:
+            email = privacy.decrypt(user_identity.email_encrypted)
+            user_name = email.split("@")[0].replace(".", " ").title()
+        except:
+            pass
+
+    # Build context for LLM
+    indicator_list = []
+    if indicators.get("overwork"):
+        indicator_list.append("overworking (late nights)")
+    if indicators.get("isolation"):
+        indicator_list.append("becoming isolated")
+    if indicators.get("fragmentation"):
+        indicator_list.append("fragmented focus (context switching)")
+    if indicators.get("weekend_work"):
+        indicator_list.append("working weekends")
+    if indicators.get("late_night_pattern"):
+        indicator_list.append("late-night work patterns")
+
+    context_str = (
+        ", ".join(indicator_list) if indicator_list else "unusual work patterns"
+    )
+
+    # Determine nudge type based on risk
     if risk_level == "CRITICAL":
         nudge_type = "urgent_intervention"
-        message = (
-            "We've noticed some intense work patterns over the past couple of weeks. "
-            "Taking a short break or blocking tomorrow morning for recovery could help maintain your performance."
-        )
+    elif risk_level == "ELEVATED":
+        nudge_type = "gentle_check_in"
+    else:
+        # LOW — no nudge needed
+        return NudgeResponse(success=True, data=None)
+
+    # Generate LLM-based personalized message
+    prompt = f"""
+You are a supportive AI assistant helping an employee manager check in with their team member.
+
+Context:
+- Team member name: {user_name}
+- Risk level: {risk_level} (CRITICAL means immediate attention needed, ELEVATED means concerning trends)
+- Work pattern concerns: {context_str}
+- Velocity score: {velocity} (higher = more intense recent work)
+- Belongingness score: {belongingness} (lower = more isolated)
+
+Generate a warm, empathetic, non-surveillance nudge message (2-3 sentences max) that:
+1. Acknowledges their work genuinely
+2. Shows care for their wellbeing
+3. Suggests one specific action without being preachy
+
+Make it feel human, not corporate. Avoid words like "monitoring", "tracking", "surveillance".
+Do NOT mention the specific metrics or scores in the message.
+"""
+
+    try:
+        llm_message = llm_service.generate_insight(prompt)
+        # Clean up the message - remove any quotes if LLM adds them
+        llm_message = llm_message.strip().strip('"').strip("'")
+    except Exception as e:
+        # Fallback to rule-based if LLM fails
+        if risk_level == "CRITICAL":
+            llm_message = f"Hi {user_name}, we've noticed you've been working intense hours lately. Your wellbeing matters - would you like to block some recovery time this week?"
+        else:
+            llm_message = f"Hi {user_name}, just checking in. We've noticed {context_str}. How are you feeling about your workload?"
+
+    # Build actions based on risk level
+    if risk_level == "CRITICAL":
         actions = [
             {"label": "Block recovery time", "action": "block_recovery"},
             {"label": "Talk to someone", "action": "request_support"},
             {"label": "I'm fine", "action": "dismiss"},
         ]
-    elif risk_level == "ELEVATED":
-        message = (
-            "Your focus sessions have been extending later recently. "
-            "Consider joining the next team sync to reconnect with your colleagues."
-        )
-        nudge_type = "gentle_check_in"
+    else:
         actions = [
             {"label": "Schedule break", "action": "schedule_break"},
             {"label": "Dismiss", "action": "dismiss"},
         ]
-    else:
-        # LOW or CALIBRATING — no nudge needed
-        return NudgeResponse(success=True, data=None)
 
     nudge_data = {
         "user_hash": user_hash,
         "nudge_type": nudge_type,
-        "message": message,
+        "message": llm_message,
         "risk_level": risk_level,
         "actions": actions,
     }
     return NudgeResponse(success=True, data=nudge_data)
+
+
+@router.post("/users/{user_hash}/nudge/dismiss")
+def dismiss_nudge(
+    user_hash: str,
+    db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(get_current_user_identity),
+):
+    """Dismiss an active nudge for a user"""
+    from app.models.identity import AuditLog
+    from datetime import datetime
+
+    log = AuditLog(
+        user_hash=user_hash,
+        action="nudge_dismissed",
+        details={
+            "dismissed_by": current_user.user_hash,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+    db.add(log)
+    db.commit()
+
+    return {"success": True, "message": "Nudge dismissed"}
+
+
+@router.post("/users/{user_hash}/nudge/schedule-break")
+def schedule_break(
+    user_hash: str,
+    db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(get_current_user_identity),
+):
+    """Schedule a break for a user (logs the action)"""
+    from app.models.identity import AuditLog
+    from datetime import datetime, timedelta
+
+    break_time = datetime.utcnow() + timedelta(days=1)
+
+    log = AuditLog(
+        user_hash=user_hash,
+        action="break_scheduled",
+        details={
+            "scheduled_by": current_user.user_hash,
+            "scheduled_for": break_time.isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+    db.add(log)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Break scheduled",
+        "scheduled_time": break_time.isoformat(),
+    }
 
 
 @router.get("/events", response_model=ActivityEventResponse)

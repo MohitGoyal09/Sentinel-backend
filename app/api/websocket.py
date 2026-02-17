@@ -6,6 +6,7 @@ from app.models.identity import UserIdentity
 from datetime import datetime
 
 from app.services.safety_valve import SafetyValve
+from app.core.security import privacy
 
 router = APIRouter()
 
@@ -53,9 +54,26 @@ async def personal_dashboard_ws(
     user_exists = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
 
     if not user_exists:
-        print(f"WS Rejected: Invalid user_hash {user_hash}")
-        await websocket.close(code=4001, reason="Invalid user")
-        return
+        # Auto-provision user identity if not exists (for demo/development)
+        # In production, you might want to reject instead
+        print(f"WS Auto-provisioning user: {user_hash}")
+        try:
+            # Try to derive email from hash (for demo purposes)
+            # In real app, this would require proper authentication
+            demo_email = f"user_{user_hash[:8]}@demo.local"
+            user_exists = UserIdentity(
+                user_hash=user_hash,
+                email_encrypted=privacy.encrypt(demo_email),
+                created_at=datetime.utcnow(),
+            )
+            db.add(user_exists)
+            db.commit()
+            print(f"WS Created new user identity for: {user_hash}")
+        except Exception as e:
+            db.rollback()
+            print(f"WS Failed to auto-provision user {user_hash}: {e}")
+            await websocket.close(code=4001, reason="Invalid user")
+            return
 
     await manager.connect(websocket, user_hash=user_hash)
 
