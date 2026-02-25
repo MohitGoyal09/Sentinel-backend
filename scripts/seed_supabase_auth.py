@@ -13,6 +13,7 @@ Prerequisites:
     2. Get the key from: Supabase Dashboard → Project Settings → API → service_role secret
     3. Verify the key: Decode at jwt.io - payload should show "role": "service_role"
 """
+
 import os
 import sys
 import json
@@ -32,30 +33,21 @@ TEST_USERS = [
         "password": "Admin123!",
         "role": "admin",
         "display_name": "Admin User",
-        "user_metadata": {
-            "role": "admin",
-            "display_name": "Admin User"
-        }
+        "user_metadata": {"role": "admin", "display_name": "Admin User"},
     },
     {
         "email": "manager1@sentinel.local",
         "password": "Manager123!",
         "role": "manager",
         "display_name": "Manager One",
-        "user_metadata": {
-            "role": "manager",
-            "display_name": "Manager One"
-        }
+        "user_metadata": {"role": "manager", "display_name": "Manager One"},
     },
     {
         "email": "manager2@sentinel.local",
         "password": "Manager456!",
         "role": "manager",
         "display_name": "Manager Two",
-        "user_metadata": {
-            "role": "manager",
-            "display_name": "Manager Two"
-        }
+        "user_metadata": {"role": "manager", "display_name": "Manager Two"},
     },
     {
         "email": "employee1@sentinel.local",
@@ -65,8 +57,8 @@ TEST_USERS = [
         "user_metadata": {
             "role": "employee",
             "display_name": "Employee One",
-            "manager_email": "manager1@sentinel.local"
-        }
+            "manager_email": "manager1@sentinel.local",
+        },
     },
     {
         "email": "employee2@sentinel.local",
@@ -76,8 +68,8 @@ TEST_USERS = [
         "user_metadata": {
             "role": "employee",
             "display_name": "Employee Two",
-            "manager_email": "manager1@sentinel.local"
-        }
+            "manager_email": "manager1@sentinel.local",
+        },
     },
     {
         "email": "employee3@sentinel.local",
@@ -87,9 +79,53 @@ TEST_USERS = [
         "user_metadata": {
             "role": "employee",
             "display_name": "Employee Three",
-            "manager_email": "manager2@sentinel.local"
-        }
-    }
+            "manager_email": "manager2@sentinel.local",
+        },
+    },
+    {
+        "email": "employee4@sentinel.local",
+        "password": "Employee101!",
+        "role": "employee",
+        "display_name": "Employee Four",
+        "user_metadata": {
+            "role": "employee",
+            "display_name": "Employee Four",
+            "manager_email": "manager2@sentinel.local",
+        },
+    },
+    {
+        "email": "employee5@sentinel.local",
+        "password": "Employee112!",
+        "role": "employee",
+        "display_name": "Employee Five",
+        "user_metadata": {
+            "role": "employee",
+            "display_name": "Employee Five",
+            "manager_email": "manager2@sentinel.local",
+        },
+    },
+    {
+        "email": "employee6@sentinel.local",
+        "password": "Employee123!",
+        "role": "employee",
+        "display_name": "Employee Six",
+        "user_metadata": {
+            "role": "employee",
+            "display_name": "Employee Six",
+            "manager_email": "manager2@sentinel.local",
+        },
+    },
+    {
+        "email": "employee7@sentinel.local",
+        "password": "Employee234!",
+        "role": "employee",
+        "display_name": "Employee Seven",
+        "user_metadata": {
+            "role": "employee",
+            "display_name": "Employee Seven",
+            "manager_email": "manager2@sentinel.local",
+        },
+    },
 ]
 
 
@@ -98,27 +134,30 @@ def load_env_vars() -> tuple[str, str]:
     # Try to load from .env file if python-dotenv is available
     try:
         from dotenv import load_dotenv
+
         env_path = Path(__file__).parent.parent / ".env"
         load_dotenv(env_path)
     except ImportError:
         print("Note: python-dotenv not installed, using system environment variables")
-    
+
     supabase_url = os.getenv("SUPABASE_URL")
-    service_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    
+    service_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv(
+        "SUPABASE_SERVICE_ROLE_KEY"
+    )
+
     if not supabase_url:
         raise ValueError(
             "SUPABASE_URL not found in environment.\n"
             "Please set it in backend/.env file."
         )
-    
+
     if not service_key:
         raise ValueError(
             "SUPABASE_SERVICE_KEY not found in environment.\n"
             "Please set it in backend/.env file.\n"
             "Get it from: Supabase Dashboard → Project Settings → API → service_role secret"
         )
-    
+
     return supabase_url, service_key
 
 
@@ -126,17 +165,17 @@ def decode_jwt_payload(token: str) -> dict:
     """Decode the payload portion of a JWT token without verification."""
     try:
         # JWT has 3 parts: header.payload.signature
-        parts = token.split('.')
+        parts = token.split(".")
         if len(parts) != 3:
             return {}
-        
+
         # Decode the payload (second part)
         payload = parts[1]
         # Add padding if needed (base64url may have missing padding)
         padding = 4 - len(payload) % 4
         if padding != 4:
-            payload += '=' * padding
-        
+            payload += "=" * padding
+
         decoded = base64.urlsafe_b64decode(payload)
         return json.loads(decoded)
     except Exception:
@@ -156,11 +195,11 @@ def validate_service_key(service_key: str) -> None:
             "3. It should look like: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\n\n"
             "Update your backend/.env file with the correct value."
         )
-    
+
     # Decode JWT and check the role
     payload = decode_jwt_payload(service_key)
     role = payload.get("role", "unknown")
-    
+
     if role == "anon":
         raise ValueError(
             " WRONG KEY TYPE DETECTED!\n\n"
@@ -168,26 +207,27 @@ def validate_service_key(service_key: str) -> None:
             "Both keys are JWTs starting with 'eyJ', but they have different permissions:\n"
             "  • anon key: Limited permissions, cannot create users\n"
             "  • service_role key: Full admin access, can create users\n\n"
-            "Your JWT payload shows: \"role\": \"anon\"\n"
-            "Required JWT payload: \"role\": \"service_role\"\n\n"
+            'Your JWT payload shows: "role": "anon"\n'
+            'Required JWT payload: "role": "service_role"\n\n'
             "To fix this:\n"
             "1. Go to Supabase Dashboard → Project Settings → API\n"
             "2. Find 'Project API keys' section\n"
             "3. Copy the 'service_role' secret (click 'Reveal' to show it)\n"
             "4. Update SUPABASE_SERVICE_KEY in backend/.env with the service_role key\n"
-            "5. Verify: Decode at jwt.io - payload should show \"role\": \"service_role\"\n\n"
+            '5. Verify: Decode at jwt.io - payload should show "role": "service_role"\n\n'
             " WARNING: The service_role key has FULL admin access. Never expose it to the frontend!"
         )
-    
+
     if role != "service_role":
         print(f"   Warning: JWT role is '{role}', expected 'service_role'")
         print("   If you encounter permission errors, verify you have the correct key.")
-    
+
     print(f"   ✓ JWT role: {role}")
 
 
 class UserAlreadyExistsError(Exception):
     """Raised when a user already exists during creation."""
+
     pass
 
 
@@ -198,18 +238,20 @@ def check_existing_user(client: Client, email: str) -> dict | None:
         # Note: list_users() doesn't support query filters in all versions
         # We need to paginate through users and filter by email
         response = client.auth.admin.list_users()
-        
+
         # The response is a list, iterate to find matching user
         # Note: list_users may return a list or an object with .users attribute
         # depending on the supabase-py version
-        users_list = response if isinstance(response, list) else getattr(response, 'users', [])
-        
+        users_list = (
+            response if isinstance(response, list) else getattr(response, "users", [])
+        )
+
         for user in users_list:
             # user might be a dict or an object with email attribute
-            user_email = user.email if hasattr(user, 'email') else user.get('email')
+            user_email = user.email if hasattr(user, "email") else user.get("email")
             if user_email == email:
                 # Return as dict for consistency
-                if hasattr(user, 'model_dump'):
+                if hasattr(user, "model_dump"):
                     return user.model_dump()
                 return user if isinstance(user, dict) else user.model_dump()
         return None
@@ -222,17 +264,22 @@ def create_auth_user(client: Client, user_data: dict) -> dict:
     """Create a user in Supabase Auth."""
     try:
         # Create user with admin API using dictionary directly
-        response = client.auth.admin.create_user({
-            "email": user_data["email"],
-            "password": user_data["password"],
-            "email_confirm": True,  # Auto-confirm email for testing
-            "user_metadata": user_data.get("user_metadata", {})
-        })
+        response = client.auth.admin.create_user(
+            {
+                "email": user_data["email"],
+                "password": user_data["password"],
+                "email_confirm": True,  # Auto-confirm email for testing
+                "user_metadata": user_data.get("user_metadata", {}),
+            }
+        )
         return response.model_dump()
     except Exception as e:
         error_msg = str(e)
         # Check if user already exists
-        if "already been registered" in error_msg.lower() or "already exists" in error_msg.lower():
+        if (
+            "already been registered" in error_msg.lower()
+            or "already exists" in error_msg.lower()
+        ):
             raise UserAlreadyExistsError(f"User already exists: {user_data['email']}")
         raise Exception(f"Failed to create user: {e}")
 
@@ -245,8 +292,8 @@ def update_existing_user(client: Client, user_id: str, user_data: dict) -> dict:
             {
                 "password": user_data["password"],
                 "user_metadata": user_data.get("user_metadata", {}),
-                "email_confirm": True  # Ensure email stays confirmed
-            }
+                "email_confirm": True,  # Ensure email stays confirmed
+            },
         )
         return response.model_dump()
     except Exception as e:
@@ -259,7 +306,7 @@ def seed_auth_users() -> None:
     print("Supabase Auth User Seeding Script")
     print("=" * 60)
     print()
-    
+
     # Load and validate credentials
     print(" Loading credentials...")
     try:
@@ -270,7 +317,7 @@ def seed_auth_users() -> None:
     except ValueError as e:
         print(f"\n{e}")
         sys.exit(1)
-    
+
     # Create Supabase client with service role key
     print("\n🔌 Connecting to Supabase...")
     try:
@@ -279,27 +326,27 @@ def seed_auth_users() -> None:
     except Exception as e:
         print(f"   ✗ Connection failed: {e}")
         sys.exit(1)
-    
+
     # Process each test user
     print(f"\n👥 Processing {len(TEST_USERS)} test users...")
     print("-" * 60)
-    
+
     created_count = 0
     updated_count = 0
     skipped_count = 0
     error_count = 0
-    
+
     for user in TEST_USERS:
         email = user["email"]
         print(f"\n    {email}")
-        
+
         # Check if user already exists
         existing_user = check_existing_user(client, email)
-        
+
         if existing_user:
             user_id = existing_user.get("id")
             print(f"      → User already exists (ID: {user_id[:8]}...)")
-            
+
             # Update password and metadata for existing user
             try:
                 update_existing_user(client, user_id, user)
@@ -325,7 +372,9 @@ def seed_auth_users() -> None:
                     user_id = existing_user.get("id")
                     try:
                         update_existing_user(client, user_id, user)
-                        print(f"      ✓ Updated password and metadata: role={user['role']}")
+                        print(
+                            f"      ✓ Updated password and metadata: role={user['role']}"
+                        )
                         updated_count += 1
                     except Exception as update_error:
                         print(f"      ✗ Failed to update: {update_error}")
@@ -336,7 +385,7 @@ def seed_auth_users() -> None:
             except Exception as e:
                 print(f"      ✗ Failed: {e}")
                 error_count += 1
-    
+
     # Summary
     print("\n" + "=" * 60)
     print(" Summary")
@@ -345,7 +394,7 @@ def seed_auth_users() -> None:
     print(f"   ↻ Updated: {updated_count}")
     print(f"   → Skipped: {skipped_count}")
     print(f"   ✗ Errors:  {error_count}")
-    
+
     if error_count == 0:
         print("\n All users processed successfully!")
         print("\nYou can now log in with any of these credentials:")

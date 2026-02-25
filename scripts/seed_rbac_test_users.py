@@ -15,6 +15,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / ".env"
+    load_dotenv(env_path)
+except ImportError:
+    print("python-dotenv not installed, using system env vars")
+
 from app.config import get_settings
 from app.core.security import privacy
 from app.models.identity import UserIdentity, AuditLog
@@ -69,11 +77,39 @@ def create_test_users():
             "description": "Product Manager - Can view team aggregates and consented individual data",
         },
         {
-            "email": "employee1@sentinel.local",
+            "email": "employee3@sentinel.local",
             "role": "employee",
-            "manager_email": "manager1@sentinel.local",
+            "manager_email": "manager2@sentinel.local",
             "consent_share_with_manager": True,
-            "description": "Senior Developer - Can view own data, has consented to share with manager",
+            "description": "Developer - Consented to share with manager",
+        },
+        {
+            "email": "employee4@sentinel.local",
+            "role": "employee",
+            "manager_email": "manager2@sentinel.local",
+            "consent_share_with_manager": True,
+            "description": "Developer - Consented to share with manager",
+        },
+        {
+            "email": "employee5@sentinel.local",
+            "role": "employee",
+            "manager_email": "manager2@sentinel.local",
+            "consent_share_with_manager": False,
+            "description": "Developer - Not consented",
+        },
+        {
+            "email": "employee6@sentinel.local",
+            "role": "employee",
+            "manager_email": "manager2@sentinel.local",
+            "consent_share_with_manager": True,
+            "description": "Developer - Consented to share with manager",
+        },
+        {
+            "email": "employee7@sentinel.local",
+            "role": "employee",
+            "manager_email": "manager2@sentinel.local",
+            "consent_share_with_manager": False,
+            "description": "Developer - Not consented",
         },
         {
             "email": "employee2@sentinel.local",

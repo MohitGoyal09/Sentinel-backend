@@ -3,6 +3,7 @@ Authentication dependency for FastAPI endpoints.
 Verifies Supabase JWT tokens from Authorization header.
 """
 
+from typing import Optional
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -13,6 +14,36 @@ from app.core.security import privacy
 from app.services.permission_service import PermissionService, UserRole
 
 security = HTTPBearer()
+security_optional = HTTPBearer(auto_error=False)
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    db: Session = Depends(get_db),
+) -> Optional[UserIdentity]:
+    """
+    Get current user identity if token is present, otherwise return None.
+    Does not raise 401.
+    """
+    if not credentials:
+        return None
+    
+    try:
+        token = credentials.credentials
+        supabase = get_supabase_client()
+        response = supabase.auth.get_user(token)
+
+        if not response or not response.user:
+            return None
+
+        # Get user hash from email
+        user_hash = privacy.hash_identity(response.user.email)
+        
+        # Fetch full identity
+        user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+        return user
+    except Exception:
+        return None 
+
 
 
 async def get_current_user(

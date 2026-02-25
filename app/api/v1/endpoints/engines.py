@@ -232,11 +232,20 @@ def analyze_team_culture(
     team_hashes = request.team_hashes
 
     if not team_hashes:
-        # Analyze all users if no specific team provided
-        from app.models.identity import UserIdentity
-
-        users = db.query(UserIdentity).all()
-        team_hashes = [u.user_hash for u in users]
+        # Analyze current user's team based on role
+        if current_user and current_user.role == "manager":
+            team_members = (
+                db.query(UserIdentity.user_hash)
+                .filter(UserIdentity.manager_hash == current_user.user_hash)
+                .all()
+            )
+            team_hashes = [current_user.user_hash] + [m.user_hash for m in team_members]
+        elif current_user and current_user.role == "employee":
+            team_hashes = [current_user.user_hash]
+        else:
+            # Admin sees all
+            users = db.query(UserIdentity).all()
+            team_hashes = [u.user_hash for u in users]
 
     engine = CultureThermometer(db)
     result = engine.analyze_team(team_hashes)
@@ -262,8 +271,19 @@ def get_team_forecast(
     days = request.days
 
     if not team_hashes:
-        users = db.query(UserIdentity).all()
-        team_hashes = [u.user_hash for u in users]
+        # Analyze current user's team based on role
+        if current_user and current_user.role == "manager":
+            team_members = (
+                db.query(UserIdentity.user_hash)
+                .filter(UserIdentity.manager_hash == current_user.user_hash)
+                .all()
+            )
+            team_hashes = [current_user.user_hash] + [m.user_hash for m in team_members]
+        elif current_user and current_user.role == "employee":
+            team_hashes = [current_user.user_hash]
+        else:
+            users = db.query(UserIdentity).all()
+            team_hashes = [u.user_hash for u in users]
 
     total_members = len(team_hashes)
 
@@ -492,6 +512,9 @@ def list_users(
 ):
     """
     List all users with their current risk scores (paginated)
+    For managers, only returns their team members.
+    For employees, returns only themselves.
+    For admins, returns all users.
 
     Query params:
     - skip: Number of records to skip (pagination offset)
@@ -501,8 +524,22 @@ def list_users(
     from app.models.identity import UserIdentity
     from sqlalchemy import desc
 
+    # Get team member hashes first for managers
+    team_member_hashes = None
+    if current_user and current_user.role == "manager":
+        manager_hash = current_user.user_hash
+        team_member_hashes = set(
+            m.user_hash
+            for m in db.query(UserIdentity.user_hash)
+            .filter(UserIdentity.manager_hash == manager_hash)
+            .all()
+        )
+        # Add manager themselves
+        team_member_hashes.add(manager_hash)
+    elif current_user and current_user.role == "employee":
+        team_member_hashes = {current_user.user_hash}
+
     # Use efficient pagination with JOIN in a single query
-    # Get users with their latest risk scores in one query using subquery
     latest_risk = (
         db.query(
             RiskScore.user_hash,
@@ -516,21 +553,21 @@ def list_users(
         .subquery()
     )
 
-    # Join with users
-    users = (
-        db.query(
-            UserIdentity.user_hash,
-            UserIdentity.email_encrypted,
-            latest_risk.c.risk_level,
-            latest_risk.c.velocity,
-            latest_risk.c.confidence,
-            latest_risk.c.updated_at,
-        )
-        .outerjoin(latest_risk, UserIdentity.user_hash == latest_risk.c.user_hash)
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    # Build base query
+    query = db.query(
+        UserIdentity.user_hash,
+        UserIdentity.email_encrypted,
+        latest_risk.c.risk_level,
+        latest_risk.c.velocity,
+        latest_risk.c.confidence,
+        latest_risk.c.updated_at,
+    ).outerjoin(latest_risk, UserIdentity.user_hash == latest_risk.c.user_hash)
+
+    # Apply role-based filtering BEFORE pagination
+    if team_member_hashes:
+        query = query.filter(UserIdentity.user_hash.in_(team_member_hashes))
+
+    users = query.offset(skip).limit(limit).all()
 
     result = []
     for user in users:
@@ -717,21 +754,42 @@ def get_dashboard_summary(
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
-    """Get summary metrics for dashboard"""
+    """Get summary metrics for dashboard - filtered by role"""
     from app.models.analytics import RiskScore
     from sqlalchemy import func
 
-    total_users = db.query(func.count(UserIdentity.user_hash)).scalar() or 0
+    # Filter based on role
+    user_filter = None
+    if current_user and current_user.role == "manager":
+        # Get team member hashes
+        team_members = (
+            db.query(UserIdentity.user_hash)
+            .filter(UserIdentity.manager_hash == current_user.user_hash)
+            .all()
+        )
+        user_filter = [current_user.user_hash] + [m.user_hash for m in team_members]
+    elif current_user and current_user.role == "employee":
+        user_filter = [current_user.user_hash]
+
+    if user_filter:
+        total_users = len(user_filter)
+        risk_scores = (
+            db.query(RiskScore).filter(RiskScore.user_hash.in_(user_filter)).all()
+        )
+    else:
+        # Admin sees all
+        total_users = db.query(func.count(UserIdentity.user_hash)).scalar() or 0
+        risk_scores = db.query(RiskScore).all()
 
     # Count risk levels
-    risk_counts = dict(
-        db.query(RiskScore.risk_level, func.count(RiskScore.id))
-        .group_by(RiskScore.risk_level)
-        .all()
-    )
+    risk_counts = {}
+    for r in risk_scores:
+        level = r.risk_level or "LOW"
+        risk_counts[level] = risk_counts.get(level, 0) + 1
 
     # Avg velocity
-    avg_velocity = db.query(func.avg(RiskScore.velocity)).scalar() or 0.0
+    velocities = [r.velocity for r in risk_scores if r.velocity]
+    avg_velocity = sum(velocities) / len(velocities) if velocities else 0.0
 
     result = {
         "total_users": total_users,
@@ -741,9 +799,7 @@ def get_dashboard_summary(
             "low": risk_counts.get("LOW", 0),
         },
         "avg_velocity": round(float(avg_velocity), 2),
-        "total_events": sum(user["events_ingested"] for user in result["users"])
-        if "users" in locals()
-        else 0,
+        "total_events": len(risk_scores),
     }
 
     return {"success": True, "data": result}

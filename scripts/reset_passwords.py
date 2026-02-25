@@ -10,7 +10,7 @@ load_dotenv(".env")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-PASSWORD = os.getenv("SEED_PASSWORD", "MyPassword123")
+PASSWORD = os.getenv("SEED_PASSWORD", "")
 
 TEST_EMAILS = [
     "admin@company.com",

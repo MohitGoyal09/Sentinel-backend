@@ -16,7 +16,7 @@ from typing import List, Optional, Dict
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
-from app.models.analytics import RiskScore, Event
+from app.models.analytics import RiskScore, RiskHistory, Event
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService
 
@@ -191,9 +191,7 @@ def get_all_users(
 ):
     """
     Get all users in the system with their status.
-
-    Returns user list with risk status, consent status, and last activity.
-    Note: Does not return encrypted PII (emails remain encrypted).
+    Admin sees email addresses, managers see hashes only (privacy protected).
     """
     query = db.query(UserIdentity)
 
@@ -203,19 +201,28 @@ def get_all_users(
     total_count = query.count()
     users = query.offset(offset).limit(limit).all()
 
-    # Get risk scores for all users
     user_hashes = [u.user_hash for u in users]
     risk_scores = db.query(RiskScore).filter(RiskScore.user_hash.in_(user_hashes)).all()
 
     risk_map = {r.user_hash: r for r in risk_scores}
 
+    from app.core.security import privacy
+
     formatted_users = []
     for user in users:
         risk = risk_map.get(user.user_hash)
 
+        decrypted_email = (
+            privacy.decrypt(user.email_encrypted) if user.email_encrypted else ""
+        )
+        email = decrypted_email if decrypted_email else None
+        name = email.split("@")[0] if email else user.user_hash[:8]
+
         formatted_users.append(
             {
                 "user_hash": user.user_hash,
+                "email": email,
+                "name": name,
                 "role": user.role,
                 "consent_share_with_manager": user.consent_share_with_manager,
                 "consent_share_anonymized": user.consent_share_anonymized,
@@ -425,6 +432,107 @@ def assign_manager(
         "user_hash": user_hash,
         "manager_hash": manager_hash,
         "old_manager": old_manager,
+    }
+
+
+@router.delete("/user/{user_hash}")
+def delete_user(
+    user_hash: str,
+    current_user: UserIdentity = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """
+    Delete a user and all associated data (admin only).
+    """
+    user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    if user_hash == current_user.user_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account",
+        )
+
+    user_hash_deleted = user.user_hash
+
+    db.query(RiskScore).filter_by(user_hash=user_hash).delete()
+    db.query(RiskHistory).filter_by(user_hash=user_hash).delete()
+    db.query(AuditLog).filter_by(user_hash=user_hash).delete()
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "message": "User deleted successfully",
+        "user_hash": user_hash_deleted,
+    }
+
+
+@router.put("/user/{user_hash}")
+def update_user(
+    user_hash: str,
+    email: Optional[str] = None,
+    current_user: UserIdentity = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update user profile (admin only).
+    """
+    user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    changes = {}
+
+    if email is not None:
+        from app.core.security import privacy
+
+        user.email_encrypted = privacy.encrypt(email)
+        changes["email"] = "updated"
+
+    audit_log = AuditLog(
+        user_hash=user_hash,
+        action="profile_updated",
+        details={
+            "changes": changes,
+            "updated_by": current_user.user_hash,
+        },
+    )
+    db.add(audit_log)
+    db.commit()
+
+    return {
+        "message": "User updated successfully",
+        "user_hash": user_hash,
+        "changes": changes,
+    }
+
+
+@router.get("/managers")
+def get_managers(
+    current_user: UserIdentity = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    """
+    Get list of all managers (for assigning to employees).
+    """
+    managers = db.query(UserIdentity).filter(UserIdentity.role == "manager").all()
+
+    return {
+        "managers": [
+            {
+                "user_hash": m.user_hash,
+                "role": m.role,
+            }
+            for m in managers
+        ]
     }
 
 

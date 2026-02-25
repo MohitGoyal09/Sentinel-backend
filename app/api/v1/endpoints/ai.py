@@ -27,6 +27,23 @@ from app.schemas.ai import (
 router = APIRouter()
 
 
+# Alias for /narratives/team/{team_hash} -> /report/team/{team_hash}
+@router.get("/narratives/team/{team_hash}")
+async def get_team_narrative_alias(
+    team_hash: str,
+    days: int = 30,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate team health narrative (alias endpoint).
+    Provides aggregated team insights with privacy protection.
+    """
+    return await generate_team_narrative_report(
+        team_hash=team_hash, days=days, current_user=current_user, db=db
+    )
+
+
 def get_user_risk_context(db: Session, user_hash: str) -> dict:
     """Fetch risk data for a user from Safety Valve"""
     risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
