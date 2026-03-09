@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta
@@ -105,13 +106,13 @@ class SafetyValve:
                 asyncio.create_task(self._dispatch_nudge_async(user_hash, result))
             except Exception as e:
                 # Log error but don't fail the analysis
-                print(f"Failed to dispatch nudge: {e}")
+                logging.getLogger("sentinel").error("Failed to dispatch nudge: %s", e)
 
         # Broadcast update to connected clients (async in background)
         try:
             asyncio.create_task(manager.broadcast_risk_update(user_hash, result))
         except Exception as e:
-            print(f"Failed to broadcast update: {e}")
+            logging.getLogger("sentinel").error("Failed to broadcast update: %s", e)
 
         return result
 

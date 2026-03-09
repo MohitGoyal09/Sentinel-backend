@@ -3,12 +3,15 @@ Hybrid Data Integration System
 Supports both simulation (demo mode) and real integrations (production)
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Iterator, Dict, List, Optional, Any
 from datetime import datetime
 from enum import Enum
 import asyncio
 from dataclasses import dataclass
+
+logger = logging.getLogger("sentinel.data_sources")
 
 
 class DataSourceType(Enum):
@@ -327,7 +330,7 @@ class SlackSource(DataSource):
             self.is_connected = auth_test["ok"]
             return self.is_connected
         except Exception as e:
-            print(f"Failed to connect to Slack: {e}")
+            logger.error("Failed to connect to Slack: %s", e)
             self.is_connected = False
             return False
 
@@ -344,7 +347,7 @@ class SlackSource(DataSource):
         # Get user ID from email
         user_id = await self._get_user_id(user_email)
         if not user_id:
-            print(f"Slack user not found for email: {user_email}")
+            logger.warning("Slack user not found for email: %s", user_email)
             return
 
         # Fetch conversation history from channels user is in
@@ -364,7 +367,7 @@ class SlackSource(DataSource):
                         yield self._transform_slack_message(message, user_email)
 
             except Exception as e:
-                print(f"Error fetching Slack history for channel {channel_id}: {e}")
+                logger.error("Error fetching Slack history for channel %s: %s", channel_id, e)
                 continue
 
     def _transform_slack_message(self, message: Dict, user_email: str) -> RawEvent:
@@ -392,7 +395,7 @@ class SlackSource(DataSource):
             if result["ok"]:
                 return result["user"]["id"]
         except Exception as e:
-            print(f"Error looking up Slack user: {e}")
+            logger.error("Error looking up Slack user: %s", e)
         return None
 
     def _get_user_conversations(self, user_id: str) -> List[str]:
@@ -403,7 +406,7 @@ class SlackSource(DataSource):
             )
             return [c["id"] for c in result["channels"]]
         except Exception as e:
-            print(f"Error fetching user conversations: {e}")
+            logger.error("Error fetching user conversations: %s", e)
             return []
 
     def _is_after_hours(self, timestamp: datetime) -> bool:
@@ -466,7 +469,7 @@ class GitHubSource(DataSource):
                 self.is_connected = response.status_code == 200
                 return self.is_connected
         except Exception as e:
-            print(f"Failed to connect to GitHub: {e}")
+            logger.error("Failed to connect to GitHub: %s", e)
             self.is_connected = False
             return False
 
@@ -678,17 +681,17 @@ class HybridDataSource(DataSource):
                 self.using_fallback = False
                 return True
         except Exception as e:
-            print(f"Primary source failed: {e}, trying fallback...")
+            logger.warning("Primary source failed: %s, trying fallback...", e)
 
         # Fall back to simulation
         try:
             if await self.fallback.connect():
                 self.is_connected = True
                 self.using_fallback = True
-                print(f"Using fallback source: {self.fallback.source_type.value}")
+                logger.warning("Using fallback source: %s", self.fallback.source_type.value)
                 return True
         except Exception as e:
-            print(f"Fallback source also failed: {e}")
+            logger.error("Fallback source also failed: %s", e)
 
         self.is_connected = False
         return False

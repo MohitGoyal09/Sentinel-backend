@@ -103,6 +103,8 @@ class QueryResult(BaseModel):
     eigenvector: Optional[float] = None
     skills: List[str] = []
     tenure_months: Optional[int] = None
+    insights: List[str] = []
+    suggested_action: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -112,6 +114,11 @@ class QueryResponse(BaseModel):
     response: str
     results: List[QueryResult]
     query_type: str
+
+    @property
+    def summary(self) -> str:
+        """Alias for response field (frontend compatibility)"""
+        return self.response
 
 
 # Agenda/Copilot Models

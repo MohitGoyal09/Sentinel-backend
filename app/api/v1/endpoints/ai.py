@@ -962,19 +962,46 @@ async def semantic_query(
     except Exception as e:
         llm_response = f"Found {len(results)} matching team members."
 
-    query_results = [
-        QueryResult(
-            user_hash=r.get("user_hash", ""),
-            name=f"Team Member {r.get('user_hash', '')[:6]}",
-            risk_level=r.get("risk_level"),
-            velocity=r.get("velocity"),
-            betweenness=r.get("betweenness"),
-            eigenvector=r.get("eigenvector"),
-            skills=[],
-            tenure_months=None,
+    query_results = []
+    for r in results[:10]:
+        risk = r.get("risk_level", "healthy")
+        vel = r.get("velocity")
+        insights = []
+        suggested_action = None
+
+        if risk == "critical":
+            insights.append("Showing critical burnout indicators requiring immediate attention")
+            suggested_action = "Schedule an urgent 1:1 check-in"
+        elif risk == "elevated":
+            insights.append("Elevated risk detected — early intervention recommended")
+            suggested_action = "Review workload and schedule a supportive conversation"
+        elif risk == "healthy":
+            insights.append("Currently in a healthy state with stable patterns")
+
+        if vel is not None:
+            if vel < 0.4:
+                insights.append(f"Low velocity ({vel:.2f}) — potential overload or disengagement")
+            elif vel > 0.8:
+                insights.append(f"High velocity ({vel:.2f}) — strong output but monitor for sustainability")
+
+        betw = r.get("betweenness")
+        if betw is not None and betw > 0.6:
+            insights.append(f"High betweenness centrality ({betw:.2f}) — key connector in team network")
+
+        query_results.append(
+            QueryResult(
+                user_hash=r.get("user_hash", ""),
+                name=r.get("display_name") or f"Team Member {r.get('user_hash', '')[:6]}",
+                risk_level=risk,
+                velocity=vel,
+                betweenness=betw,
+                eigenvector=r.get("eigenvector"),
+                skills=r.get("skills", []),
+                tenure_months=r.get("tenure_months"),
+                insights=insights,
+                suggested_action=suggested_action,
+            )
         )
-        for r in results[:10]
-    ]
 
     return QueryResponse(
         query=query,
@@ -1183,22 +1210,25 @@ async def chat(
         if request.context:
             user_context.update(request.context)
 
-        # Build role-aware prompt
-        # TODO: In production, fetch conversation history if conversation_id provided
-        conversation_history = None
-        prompt = build_chat_prompt(
-            message=request.message,
-            role=user_role,
-            context=user_context,
-            conversation_history=conversation_history,
-        )
+        # Build role-aware prompt with system message and context
+        system_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS["employee"])
+        context_str = format_context_for_role(user_context, user_role)
+        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}"
 
-        # Generate response using LLM
-        try:
-            llm_response = llm_service.generate_insight(prompt)
-        except Exception as e:
-            # Fallback response if LLM fails
-            llm_response = "I apologize, but I'm having trouble generating a response right now. Please try again in a moment."
+        # Build message list for multi-turn conversation
+        messages = [{"role": "system", "content": full_system}]
+
+        # Include conversation history if provided via context
+        history = (request.context or {}).get("conversation_history", [])
+        if isinstance(history, list):
+            for msg in history[-10:]:  # Last 10 messages for context window safety
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": request.message})
+
+        # Generate response using LLM with conversation support
+        llm_response = llm_service.generate_chat_response(messages)
 
         # Generate conversation ID if not provided (for tracking)
         conversation_id = (

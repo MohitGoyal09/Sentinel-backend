@@ -3,10 +3,13 @@ Ingestion Pipeline using Hybrid Data Sources
 Supports both simulation and real integrations
 """
 
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 import asyncio
+
+logger = logging.getLogger("sentinel.ingestion")
 
 from app.services.data_sources import (
     DataSource,
@@ -207,7 +210,7 @@ class IngestionPipeline:
             try:
                 await source.disconnect()
             except Exception as e:
-                print(f"Error disconnecting {source.source_type.value}: {e}")
+                logger.error("Error disconnecting %s: %s", source.source_type.value, e)
 
 
 class QuickIngestor:

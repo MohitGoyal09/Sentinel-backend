@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, DateTime, Integer, JSON
+from sqlalchemy import Column, String, Float, DateTime, Integer, JSON, Index
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
@@ -9,7 +9,11 @@ class Event(Base):
     """Raw behavioral events (Vault A)"""
 
     __tablename__ = "events"
-    __table_args__ = {"schema": "analytics"}
+    __table_args__ = (
+        Index("ix_events_user_timestamp", "user_hash", "timestamp"),
+        Index("ix_events_type", "event_type"),
+        {"schema": "analytics"},
+    )
 
     id = Column(Integer, primary_key=True)
     user_hash = Column(String(64), index=True)
@@ -39,8 +43,13 @@ class RiskScore(Base):
     velocity = Column(Float)
     risk_level = Column(String(20))
     confidence = Column(Float)
-    thwarted_belongingness = Column(Float)  # Psychological metric
+    thwarted_belongingness = Column(Float)  # Psychological metric (IPT theory)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+    @property
+    def belongingness_score(self) -> float:
+        """Alias for consistent naming across models."""
+        return self.thwarted_belongingness or 0.0
 
 
 class GraphEdge(Base):
@@ -75,7 +84,10 @@ class RiskHistory(Base):
     """Historical risk score snapshots for timeline charts"""
 
     __tablename__ = "risk_history"
-    __table_args__ = {"schema": "analytics"}
+    __table_args__ = (
+        Index("ix_risk_history_user_timestamp", "user_hash", "timestamp"),
+        {"schema": "analytics"},
+    )
 
     id = Column(Integer, primary_key=True)
     user_hash = Column(String(64), index=True)

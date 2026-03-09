@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,9 @@ from app.models.analytics import Base as AnalyticsBase
 from app.models.identity import Base as IdentityBase
 from app.api.v1.api import api_router
 from app.config import get_settings
+from app.core.rate_limiter import RateLimitMiddleware
+
+logger = logging.getLogger("sentinel")
 
 # Create schemas if they don't exist
 # Note: Production should use Alembic migrations
@@ -18,31 +22,52 @@ IdentityBase.metadata.create_all(engine)
 
 app = FastAPI(title="Sentinel - Three Engine System")
 
-# CORS — allow all origins for development
-# TODO: Restrict in production via ALLOWED_ORIGINS env var
+settings = get_settings()
+
+# Parse allowed origins from settings
+allowed_origins = [
+    origin.strip()
+    for origin in settings.allowed_origins.split(",")
+    if origin.strip()
+]
+
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    expose_headers=["Content-Length"],
 )
+
+# Rate limiting middleware (token bucket per IP)
+app.add_middleware(RateLimitMiddleware)
+
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Ensure unhandled exceptions still return CORS-friendly JSON responses."""
-    import traceback
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
 
-    traceback.print_exc()
+    origin = request.headers.get("origin", "")
+    cors_origin = origin if origin in allowed_origins else allowed_origins[0] if allowed_origins else "*"
 
-    # Add CORS headers to error responses
     headers = {
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": cors_origin,
         "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Allow-Methods": "*",
-        "Access-Control-Allow-Headers": "*",
     }
 
     # Handle preflight requests
@@ -55,7 +80,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
+        content={"detail": "Internal server error"},
         headers=headers,
     )
 
@@ -63,11 +88,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Ensure HTTP exceptions (401, 403, etc.) return CORS-friendly responses."""
+    origin = request.headers.get("origin", "")
+    cors_origin = origin if origin in allowed_origins else allowed_origins[0] if allowed_origins else "*"
+
     headers = {
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": cors_origin,
         "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Allow-Methods": "*",
-        "Access-Control-Allow-Headers": "*",
     }
 
     # Merge with existing headers from the exception if any

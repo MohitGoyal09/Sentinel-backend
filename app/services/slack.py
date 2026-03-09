@@ -1,8 +1,11 @@
+import logging
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from app.config import get_settings
 import asyncio
 from typing import Optional
+
+logger = logging.getLogger("sentinel.slack")
 
 settings = get_settings()
 
@@ -18,7 +21,7 @@ class SlackService:
         Returns True if sent successfully.
         """
         if not self.client:
-            print(f"[MOCK SLACK] To {email}: {message[:50]}...")
+            logger.info("[MOCK SLACK] To %s: %s...", email, message[:50])
             return True
         
         try:
@@ -69,13 +72,13 @@ class SlackService:
             return True
             
         except SlackApiError as e:
-            print(f"Slack API Error: {e.response['error']}")
+            logger.error("Slack API Error: %s", e.response['error'])
             return False
     
     async def send_manager_alert(self, manager_email: str, anonymous_id: str, team_risk: str):
         """Send aggregated alert to manager (no individual names)"""
         if not self.client:
-            print(f"[MOCK SLACK] To Manager {manager_email}: Team member {anonymous_id} showing {team_risk}")
+            logger.info("[MOCK SLACK] To Manager %s: Team member %s showing %s", manager_email, anonymous_id, team_risk)
             return True
         
         try:
@@ -100,7 +103,7 @@ class SlackService:
             return True
             
         except SlackApiError as e:
-            print(f"Slack Manager Alert Error: {e}")
+            logger.error("Slack Manager Alert Error: %s", e)
             return False
 
 slack_service = SlackService()

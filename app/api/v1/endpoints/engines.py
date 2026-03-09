@@ -127,7 +127,7 @@ def create_persona(
 
     if request.persona_type in ["sarah_gem", "maria_contagion"]:
         team = ["alex_hash", "sarah_hash", "jordan_hash"]
-        edges = sim._create_team_network(team)
+        edges = sim.create_team_network(team)
         for edge in edges:
             db.add(edge)
 
@@ -342,7 +342,7 @@ def get_nudge(
         try:
             email = privacy.decrypt(user_identity.email_encrypted)
             user_name = email.split("@")[0].replace(".", " ").title()
-        except:
+        except Exception:
             pass
 
     # Build context for LLM
@@ -659,6 +659,7 @@ def inject_event(
     request: InjectEventRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(get_current_user_identity),
 ):
     """Inject a real-time event for demo purposes"""
     sim = RealTimeSimulator(db)
@@ -671,11 +672,23 @@ def inject_event(
         # Fallback for demo users
         user_hash = f"demo_{request.user_email.split('@')[0]}"
 
-    # Inject event
-    event = sim._create_synthetic_event(
-        user_hash=user_hash,
-        event_type=request.event_type,
-        metadata=request.metadata or {},
+    # Generate a realistic event using the simulation engine
+    from app.models.analytics import RiskScore
+    current_risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+    current_risk = current_risk_score.risk_level if current_risk_score else "LOW"
+
+    event_data = sim.generate_realtime_event(user_hash, current_risk)
+    # Override event type if specified in request
+    if request.event_type:
+        event_data["event_type"] = request.event_type
+    if request.metadata:
+        event_data["metadata_"].update(request.metadata)
+
+    event = Event(
+        user_hash=event_data["user_hash"],
+        timestamp=event_data["timestamp"],
+        event_type=event_data["event_type"],
+        metadata_=event_data["metadata_"],
     )
     db.add(event)
     db.commit()
@@ -721,6 +734,7 @@ def seed_user_history(
     user_hash: str,
     persona_type: str = "alex_burnout",
     db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(get_current_user_identity),
 ):
     """Seed 30 days of historical risk data for an existing user (admin/demo use)"""
     from app.models.analytics import RiskHistory

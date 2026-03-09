@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.services.slack import slack_service
@@ -6,6 +7,8 @@ from app.core.security import privacy
 from app.models.identity import UserIdentity, AuditLog
 from app.services.websocket_manager import manager
 from typing import Optional
+
+logger = logging.getLogger("sentinel.nudge_dispatcher")
 
 class NudgeDispatcher:
     """
@@ -34,7 +37,7 @@ class NudgeDispatcher:
         # Get user identity from Vault B
         user = self.db.query(UserIdentity).filter_by(user_hash=user_hash).first()
         if not user:
-            print(f"No identity found for hash {user_hash}")
+            logger.warning("No identity found for hash %s", user_hash)
             return False
         
         email = privacy.decrypt(user.email_encrypted)

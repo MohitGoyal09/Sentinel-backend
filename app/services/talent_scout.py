@@ -1,8 +1,11 @@
+import logging
 import networkx as nx
 from datetime import datetime
 from typing import Dict
 from sqlalchemy.orm import Session
 from app.models.analytics import Event, GraphEdge, CentralityScore
+
+logger = logging.getLogger("sentinel.talent_scout")
 
 
 class TalentScout:
@@ -114,15 +117,13 @@ class TalentScout:
         try:
             return nx.eigenvector_centrality(G, max_iter=5000, weight="weight")
         except (nx.PowerIterationFailedConvergence, Exception) as e:
-            print(f"Eigenvector with weights failed: {e}, trying without weights...")
+            logger.debug("Eigenvector with weights failed: %s, trying without weights", e)
 
         # Strategy 2: Try without weights (more stable)
         try:
             return nx.eigenvector_centrality(G, max_iter=10000, weight=None)
         except (nx.PowerIterationFailedConvergence, Exception) as e:
-            print(
-                f"Eigenvector without weights failed: {e}, using degree centrality..."
-            )
+            logger.debug("Eigenvector without weights failed: %s, using degree centrality", e)
 
         # Strategy 3: Use degree centrality as approximation
         try:
@@ -132,7 +133,7 @@ class TalentScout:
             if max_val > 0:
                 return {k: v / max_val for k, v in degree_cent.items()}
         except Exception as e:
-            print(f"Degree centrality failed: {e}")
+            logger.warning("Degree centrality failed: %s", e)
 
         # Strategy 4: Last resort - uniform distribution
         return {node: 1.0 / len(G.nodes()) for node in G.nodes()}

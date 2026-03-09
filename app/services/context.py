@@ -1,9 +1,13 @@
+import logging
+
 import httpx
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.analytics import Event
+
+logger = logging.getLogger("sentinel.context")
 
 settings = get_settings()
 
@@ -43,7 +47,7 @@ class ContextEnricher:
                 }
         except Exception as e:
             # Fail open: if API down, assume not explained (safer to flag)
-            print(f"PagerDuty API error: {e}")
+            logger.error("PagerDuty API error: %s", e)
             checks.append(("on_call", False, 0.0))
 
         # 2. Check Jira (Sprint deadline within 48h)
@@ -57,7 +61,7 @@ class ContextEnricher:
                     "details": f"Sprint ends in {sprint_end.get('hours_remaining', 24)}h",
                 }
         except Exception as e:
-            print(f"Jira API error: {e}")
+            logger.error("Jira API error: %s", e)
 
         # 3. Check Google Calendar (OOO/Focus time/Meetings)
         try:
@@ -70,7 +74,7 @@ class ContextEnricher:
                     "details": "PTO or OOO scheduled",
                 }
         except Exception as e:
-            print(f"Calendar API error: {e}")
+            logger.error("Calendar API error: %s", e)
 
         # 4. Check timezone (working late in PST vs EST)
         timezone_explained = self._check_timezone_bias(user_email, timestamp)
