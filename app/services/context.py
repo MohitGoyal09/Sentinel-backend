@@ -2,7 +2,7 @@ import logging
 
 import httpx
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Dict, List
 from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.analytics import Event
@@ -118,7 +118,7 @@ class ContextEnricher:
             }
 
         # Real PagerDuty API
-        url = f"https://api.pagerduty.com/oncalls"
+        url = "https://api.pagerduty.com/oncalls"
         headers = {
             "Authorization": f"Bearer {self.pagerduty_key}",
             "Content-Type": "application/json",
@@ -152,7 +152,7 @@ class ContextEnricher:
             }
 
         # Real Jira API - find active sprint for user
-        url = f"https://your-domain.atlassian.net/rest/agile/1.0/board/123/sprint"
+        url = "https://your-domain.atlassian.net/rest/agile/1.0/board/123/sprint"
         headers = {"Authorization": f"Bearer {self.jira_token}"}
 
         async with httpx.AsyncClient() as client:
@@ -228,8 +228,7 @@ class ContextEnricher:
         """
         Batch process events to mark explained late nights.
         Called by SafetyValve before calculating velocity.
-        Note: This modifies events in-memory but does NOT persist to DB for performance.
-        The explanation status is used for calculation only.
+        Modifies events in-memory for calculation. Optionally persists to DB.
         """
         import random
 
@@ -251,5 +250,15 @@ class ContextEnricher:
                 else:
                     # Weekday late night - default unexplained unless proven otherwise
                     event.metadata_["explained"] = False
+
+        # Persist metadata changes to DB
+        try:
+            for event in events:
+                if event.id:
+                    self.db.merge(event)
+            self.db.commit()
+        except Exception as e:
+            logger.warning("Failed to persist event explanations: %s", e)
+            self.db.rollback()
 
         return events

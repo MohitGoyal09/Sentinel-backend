@@ -96,23 +96,38 @@ class SafetyValve:
     def analyze_and_notify(self, user_hash: str) -> Dict:
         """Analyze and trigger real-time updates (synchronous for API compatibility)"""
         import asyncio
+        import traceback
 
         result = self.analyze(user_hash)
 
         # If elevated or critical, dispatch nudge via Slack (async in background)
         if result["risk_level"] in ["ELEVATED", "CRITICAL"]:
             try:
-                # Fire and forget - don't block the API response
-                asyncio.create_task(self._dispatch_nudge_async(user_hash, result))
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._dispatch_nudge_async(user_hash, result))
+            except RuntimeError:
+                # No running event loop - skip async dispatch
+                logging.getLogger("sentinel").warning(
+                    "No event loop available for nudge dispatch (user_hash=%s)",
+                    user_hash,
+                )
             except Exception as e:
-                # Log error but don't fail the analysis
-                logging.getLogger("sentinel").error("Failed to dispatch nudge: %s", e)
+                logging.getLogger("sentinel").error(
+                    "Failed to dispatch nudge: %s\n%s", e, traceback.format_exc()
+                )
 
         # Broadcast update to connected clients (async in background)
         try:
-            asyncio.create_task(manager.broadcast_risk_update(user_hash, result))
+            loop = asyncio.get_running_loop()
+            loop.create_task(manager.broadcast_risk_update(user_hash, result))
+        except RuntimeError:
+            logging.getLogger("sentinel").warning(
+                "No event loop available for broadcast (user_hash=%s)", user_hash
+            )
         except Exception as e:
-            logging.getLogger("sentinel").error("Failed to broadcast update: %s", e)
+            logging.getLogger("sentinel").error(
+                "Failed to broadcast update: %s\n%s", e, traceback.format_exc()
+            )
 
         return result
 

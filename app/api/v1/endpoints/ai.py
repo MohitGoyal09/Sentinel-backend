@@ -1,7 +1,10 @@
+import json
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from app.core.database import get_db
 from app.models.analytics import RiskScore, Event, RiskHistory, CentralityScore
@@ -1213,7 +1216,13 @@ async def chat(
         # Build role-aware prompt with system message and context
         system_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS["employee"])
         context_str = format_context_for_role(user_context, user_role)
-        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}"
+        suggestion_instruction = (
+            "\n\nIMPORTANT: At the very end of your response, on a new line, include exactly 3 brief "
+            "follow-up questions the user might want to ask next. Format them as:\n"
+            "<suggestions>\n- First suggestion\n- Second suggestion\n- Third suggestion\n</suggestions>\n"
+            "Do NOT mention these suggestions in your main response. Keep each suggestion under 60 characters."
+        )
+        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}{suggestion_instruction}"
 
         # Build message list for multi-turn conversation
         messages = [{"role": "system", "content": full_system}]
@@ -1256,4 +1265,87 @@ async def chat(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing chat request: {str(e)}",
+        )
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Streaming version of the chat endpoint.
+    Returns Server-Sent Events with token-by-token response.
+    """
+    try:
+        user_role = current_user.role or "employee"
+        user_context = get_user_context_data(db, current_user.user_hash)
+
+        if request.context:
+            user_context.update(request.context)
+
+        system_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS["employee"])
+        context_str = format_context_for_role(user_context, user_role)
+        suggestion_instruction = (
+            "\n\nIMPORTANT: At the very end of your response, on a new line, include exactly 3 brief "
+            "follow-up questions the user might want to ask next. Format them as:\n"
+            "<suggestions>\n- First suggestion\n- Second suggestion\n- Third suggestion\n</suggestions>\n"
+            "Do NOT mention these suggestions in your main response. Keep each suggestion under 60 characters."
+        )
+        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}{suggestion_instruction}"
+
+        messages = [{"role": "system", "content": full_system}]
+
+        history = (request.context or {}).get("conversation_history", [])
+        if isinstance(history, list):
+            for msg in history[-10:]:
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": request.message})
+
+        conversation_id = (
+            request.conversation_id
+            or f"chat_{current_user.user_hash}_{datetime.utcnow().timestamp()}"
+        )
+
+        async def event_generator():
+            for chunk in llm_service.generate_chat_response_stream(messages):
+                event_data = json.dumps({"type": "token", "content": chunk})
+                yield f"data: {event_data}\n\n"
+                await asyncio.sleep(0)
+
+            # Send final metadata event
+            metadata = {
+                "type": "done",
+                "role": user_role,
+                "conversation_id": conversation_id,
+                "context_used": {
+                    "risk_level": user_context.get("risk_level"),
+                    "velocity": user_context.get("velocity"),
+                    "belongingness": user_context.get("belongingness"),
+                    "team_size": user_context.get("team_size"),
+                    "org_total_users": user_context.get("org_total_users"),
+                },
+                "generated_at": datetime.utcnow().isoformat(),
+            }
+            yield f"data: {json.dumps(metadata)}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing streaming chat request: {str(e)}",
         )

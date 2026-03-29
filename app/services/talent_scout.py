@@ -1,6 +1,5 @@
 import logging
 import networkx as nx
-from datetime import datetime
 from typing import Dict
 from sqlalchemy.orm import Session
 from app.models.analytics import Event, GraphEdge, CentralityScore
@@ -65,7 +64,6 @@ class TalentScout:
         # Build response nodes/edges
         graph_nodes = []
         # Import random for basic visualization variation if needed, or just static
-        import random
 
         for node in G.nodes():
             bw = betweenness.get(node, 0)

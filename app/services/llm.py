@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Generator
 from litellm import completion
 from app.config import get_settings
 
@@ -87,6 +88,33 @@ class LLMService:
                 logger.warning("Chat fallback %s failed: %s", fallback, e)
 
         return "I'm sorry, I'm having trouble connecting to my language model right now. Please try again in a moment."
+
+    def generate_chat_response_stream(self, messages: list, model: str | None = None) -> Generator[str, None, None]:
+        """Generate a streaming chat response. Yields content chunks as strings."""
+        try:
+            response = completion(
+                model=self._get_model_string(model),
+                messages=messages,
+                api_key=settings.llm_api_key if settings.llm_api_key else None,
+                timeout=30,
+                stream=True,
+            )
+            for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
+        except Exception as e:
+            logger.warning("Streaming LLM failed (%s): %s", self._get_model_string(model), e)
+            # Fallback: try non-streaming with fallback models
+            for fallback in self.FALLBACK_MODELS:
+                try:
+                    logger.info("Streaming fallback to non-stream: %s", fallback)
+                    result = self._call_llm(messages, model=fallback)
+                    yield result
+                    return
+                except Exception as fe:
+                    logger.warning("Streaming fallback %s failed: %s", fallback, fe)
+            yield "I'm sorry, I'm having trouble connecting right now. Please try again."
 
 
 llm_service = LLMService()
