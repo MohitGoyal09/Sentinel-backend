@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.api.deps import get_db
+from app.api.deps.auth import get_current_user_identity, require_role
 from app.core.security import privacy
 from app.models.analytics import Event
 from app.models.identity import UserIdentity
@@ -74,7 +75,7 @@ class IngestionEvent(BaseModel):
 # ============================================
 
 @router.get("/status")
-def get_pipeline_status(db: Session = Depends(get_db)):
+def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
     """Get full pipeline status including connectors, stages, metrics."""
     # Query actual DB counts
     try:
@@ -194,7 +195,7 @@ def get_pipeline_status(db: Session = Depends(get_db)):
 
 
 @router.post("/upload-csv")
-async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
     """
     Upload a CSV file to ingest behavioral data.
     Expected columns: timestamp, user_email, event_type, source
@@ -346,7 +347,7 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
 
 
 @router.get("/sample-csv")
-def get_sample_csv():
+def get_sample_csv(user=Depends(get_current_user_identity)):
     """Return a sample CSV template for data upload."""
     return {
         "filename": "sentinel_sample_data.csv",

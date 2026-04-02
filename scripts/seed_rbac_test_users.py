@@ -13,11 +13,13 @@ import string
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from pathlib import Path
+
 try:
     from dotenv import load_dotenv
+
     env_path = Path(__file__).parent.parent / ".env"
     load_dotenv(env_path)
 except ImportError:
@@ -26,7 +28,6 @@ except ImportError:
 from app.config import get_settings
 from app.core.security import privacy
 from app.models.identity import UserIdentity, AuditLog
-from datetime import datetime
 
 
 def _get_seed_password() -> str:
@@ -37,7 +38,7 @@ def _get_seed_password() -> str:
     alphabet = string.ascii_letters + string.digits + "!@#$%"
     pw = "".join(secrets.choice(alphabet) for _ in range(16))
     print(f"  [WARN] SEED_PASSWORD not set. Generated: {pw}")
-    print(f"         Set SEED_PASSWORD in .env to use a fixed password.\n")
+    print("         Set SEED_PASSWORD in .env to use a fixed password.\n")
     return pw
 
 
@@ -51,79 +52,58 @@ def create_test_users():
     print("CREATING TEST USERS FOR RBAC TESTING")
     print("=" * 70)
 
-    seed_password = _get_seed_password()
+    _get_seed_password()
 
-    # Define test users with their roles and relationships
+    # Unified demo users — matches seed_demo.py emails exactly
     test_users = [
         {
             "email": "admin@sentinel.local",
             "role": "admin",
             "manager_email": None,
             "consent_share_with_manager": False,
-            "description": "System Administrator - Full access to all features",
+            "description": "System Administrator — Full access",
         },
         {
-            "email": "manager1@sentinel.local",
+            "email": "jordan.chen@sentinel.local",
             "role": "manager",
             "manager_email": None,
             "consent_share_with_manager": False,
-            "description": "Engineering Manager - Can view team aggregates and consented individual data",
+            "description": "Engineering Manager — Healthy leader, can view team aggregates",
         },
         {
-            "email": "manager2@sentinel.local",
-            "role": "manager",
-            "manager_email": None,
-            "consent_share_with_manager": False,
-            "description": "Product Manager - Can view team aggregates and consented individual data",
-        },
-        {
-            "email": "employee3@sentinel.local",
+            "email": "alex.rivera@sentinel.local",
             "role": "employee",
-            "manager_email": "manager2@sentinel.local",
+            "manager_email": "jordan.chen@sentinel.local",
             "consent_share_with_manager": True,
-            "description": "Developer - Consented to share with manager",
+            "description": "Senior Backend Engineer — CRITICAL burnout demo persona",
         },
         {
-            "email": "employee4@sentinel.local",
+            "email": "sarah.kim@sentinel.local",
             "role": "employee",
-            "manager_email": "manager2@sentinel.local",
+            "manager_email": "jordan.chen@sentinel.local",
+            "consent_share_with_manager": False,
+            "description": "Mid-Level Frontend Engineer — Hidden gem demo persona (NOT consented)",
+        },
+        {
+            "email": "maria.santos@sentinel.local",
+            "role": "employee",
+            "manager_email": "jordan.chen@sentinel.local",
             "consent_share_with_manager": True,
-            "description": "Developer - Consented to share with manager",
+            "description": "Backend Engineer — Contagion pattern demo persona",
         },
         {
-            "email": "employee5@sentinel.local",
+            "email": "priya.sharma@sentinel.local",
             "role": "employee",
-            "manager_email": "manager2@sentinel.local",
-            "consent_share_with_manager": False,
-            "description": "Developer - Not consented",
-        },
-        {
-            "email": "employee6@sentinel.local",
-            "role": "employee",
-            "manager_email": "manager2@sentinel.local",
+            "manager_email": "jordan.chen@sentinel.local",
             "consent_share_with_manager": True,
-            "description": "Developer - Consented to share with manager",
+            "description": "Staff Engineer — Backend team, consented",
         },
         {
-            "email": "employee7@sentinel.local",
+            "email": "emma.wilson@sentinel.local",
             "role": "employee",
-            "manager_email": "manager2@sentinel.local",
-            "consent_share_with_manager": False,
-            "description": "Developer - Not consented",
-        },
-        {
-            "email": "employee2@sentinel.local",
-            "role": "employee",
-            "manager_email": "manager1@sentinel.local",
-            "consent_share_with_manager": False,
-            "description": "Junior Developer - Can view own data, has NOT consented to share",
-        },
-        {
-            "email": "employee3@sentinel.local",
-            "role": "employee",
-            "manager_email": "manager2@sentinel.local",
-            "consent_share_with_manager": False,
-            "description": "Designer - Can view own data, different manager",
+            "manager_email": "jordan.chen@sentinel.local",
+            "consent_share_with_manager": True,
+            "description": "Senior Frontend Engineer — Frontend team, consented",
         },
     ]
 
@@ -232,19 +212,19 @@ def create_test_users():
             print(f"   Status: {user['status']}")
             print("-" * 70)
 
-        print(f"\nPassword for all users: (the SEED_PASSWORD you provided)")
+        print("\nPassword for all users: (the SEED_PASSWORD you provided)")
 
         print("\n" + "=" * 70)
-        print("MANAGER-EMPLOYEE RELATIONSHIPS")
+        print("ORGANIZATION STRUCTURE")
         print("=" * 70)
-        print("\nOrganization Structure:\n")
-        print("Admin: admin@sentinel.local")
-        print("   L- Full system access\n")
-        print("Manager 1: manager1@sentinel.local")
-        print("   |- employee1@sentinel.local (CONSENTED)")
-        print("   L- employee2@sentinel.local (NOT consented)\n")
-        print("Manager 2: manager2@sentinel.local")
-        print("   L- employee3@sentinel.local (NOT consented)\n")
+        print("\nAdmin: admin@sentinel.local")
+        print("   Full system access\n")
+        print("Manager: jordan.chen@sentinel.local (Engineering Manager)")
+        print("   |- alex.rivera@sentinel.local     (CONSENTED, CRITICAL burnout)")
+        print("   |- sarah.kim@sentinel.local       (NOT consented, hidden gem)")
+        print("   |- maria.santos@sentinel.local    (CONSENTED, contagion pattern)")
+        print("   |- priya.sharma@sentinel.local    (CONSENTED)")
+        print("   L- emma.wilson@sentinel.local     (CONSENTED)\n")
 
         print("=" * 70)
         print("RBAC TEST SCENARIOS")

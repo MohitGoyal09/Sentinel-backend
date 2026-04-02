@@ -8,7 +8,7 @@ These endpoints allow employees to:
 - Delete their data (GDPR right to be forgotten)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from typing import Optional
@@ -29,6 +29,7 @@ class ConsentUpdate(BaseModel):
     consent_share_anonymized: Optional[bool] = None
 
 
+@router.get("", response_model=dict)
 @router.get("/", response_model=dict)
 def get_my_profile(
     current_user: UserIdentity = Depends(get_current_user_identity),
@@ -107,7 +108,7 @@ def get_my_profile(
 
 @router.get("/risk-history", response_model=list)
 def get_my_risk_history(
-    days: int = 30,
+    days: int = Query(default=30, ge=1, le=365),
     current_user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
 ):
@@ -353,7 +354,7 @@ def delete_my_data(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete data: {str(e)}",
+            detail="Data deletion failed. Please contact support.",
         )
 
 

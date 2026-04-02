@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, LargeBinary, DateTime, JSON, Integer, Boolean
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
@@ -12,6 +13,7 @@ class UserIdentity(Base):
     __table_args__ = {"schema": "identity"}
 
     user_hash = Column(String(64), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     email_encrypted = Column(LargeBinary, nullable=False)
     slack_id_encrypted = Column(LargeBinary, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -39,5 +41,5 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_hash = Column(String(64), index=True)
     action = Column(String(50))  # nudge_sent, data_deleted, etc.
-    details = Column(JSON, default={})
+    details = Column(JSON, default=dict)
     timestamp = Column(DateTime, default=datetime.utcnow)

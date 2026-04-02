@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.services.websocket_manager import manager
 from app.api.deps import get_db
 from app.models.identity import UserIdentity
+from app.core.supabase import get_supabase_client
 from datetime import datetime
 
 from app.services.safety_valve import SafetyValve
@@ -23,6 +24,21 @@ async def personal_dashboard_ws(
     """
     # Accept connection FIRST per WebSocket protocol (RFC 6455)
     await websocket.accept()
+
+    # Authenticate via token query parameter
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    try:
+        supabase = get_supabase_client()
+        user = supabase.auth.get_user(token)
+        if not user or not user.user:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+    except Exception:
+        await websocket.close(code=4001, reason="Authentication failed")
+        return
 
     # Validate user_hash
     if (
@@ -81,12 +97,34 @@ async def personal_dashboard_ws(
 
 
 @router.websocket("/admin/team")
-async def admin_dashboard_ws(websocket: WebSocket):
+async def admin_dashboard_ws(websocket: WebSocket, db: Session = Depends(get_db)):
     """
     WebSocket for manager dashboard (anonymous aggregated data).
     """
     # Accept connection FIRST per WebSocket protocol (RFC 6455)
     await websocket.accept()
+
+    # Authenticate via token query parameter
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    try:
+        supabase = get_supabase_client()
+        auth_user = supabase.auth.get_user(token)
+        if not auth_user or not auth_user.user:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        # Verify admin role
+        user_hash = privacy.hash_identity(auth_user.user.email)
+        identity = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+        if not identity or identity.role != "admin":
+            await websocket.close(code=4003, reason="Admin access required")
+            return
+    except Exception:
+        await websocket.close(code=4001, reason="Authentication failed")
+        return
+
     await manager.connect(websocket, user_hash=None)  # None = admin channel
 
     try:

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.analytics import Base as AnalyticsBase
 from app.models.identity import Base as IdentityBase
+from app.models.workflow import Base as WorkflowBase
 from app.config import get_settings
 
 settings = get_settings()
@@ -29,7 +30,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Combine metadata from both models for autogenerate support
-target_metadata = [AnalyticsBase.metadata, IdentityBase.metadata]
+target_metadata = [AnalyticsBase.metadata, IdentityBase.metadata, WorkflowBase.metadata]
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

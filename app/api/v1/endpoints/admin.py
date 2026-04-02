@@ -8,7 +8,7 @@ System administration endpoints for:
 - Configuration management
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, Integer
 from datetime import datetime, timedelta
@@ -117,10 +117,10 @@ def get_system_health(
 
 @router.get("/audit-logs", response_model=dict)
 def get_system_audit_logs(
-    days: int = 7,
+    days: int = Query(default=7, ge=1, le=90),
     action_type: Optional[str] = None,
     user_hash: Optional[str] = None,
-    limit: int = 100,
+    limit: int = Query(default=100, le=1000),
     offset: int = 0,
     current_user: UserIdentity = Depends(require_role("admin")),
     db: Session = Depends(get_db),
@@ -534,6 +534,57 @@ def get_managers(
             for m in managers
         ]
     }
+
+
+@router.get("/users/search")
+async def search_users(
+    q: str = "",
+    role: str = "",
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(require_role("admin")),
+):
+    """Search and filter users with pagination."""
+    from app.core.response import success_response
+
+    query = db.query(UserIdentity)
+
+    if q:
+        query = query.filter(UserIdentity.user_hash.contains(q.lower()))
+
+    if role:
+        query = query.filter(UserIdentity.role == role)
+
+    total = query.count()
+
+    ALLOWED_SORT_COLS = {"created_at", "role", "user_hash"}
+    if sort_by in ALLOWED_SORT_COLS and hasattr(UserIdentity, sort_by):
+        col = getattr(UserIdentity, sort_by)
+        query = query.order_by(col.desc() if sort_order == "desc" else col.asc())
+
+    users = query.offset(offset).limit(limit).all()
+
+    return success_response(
+        {
+            "users": [
+                {
+                    "user_hash": u.user_hash,
+                    "role": u.role,
+                    "created_at": u.created_at.isoformat() if u.created_at else None,
+                    "consent_share_with_manager": u.consent_share_with_manager,
+                    "consent_share_anonymized": u.consent_share_anonymized,
+                    "monitoring_paused": u.monitoring_paused_until is not None,
+                }
+                for u in users
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
 
 
 @router.get("/config", response_model=dict)

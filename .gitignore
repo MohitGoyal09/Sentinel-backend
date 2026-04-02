@@ -20,4 +20,5 @@ test_results.txt
 
 # OS files
 .DS_Store
-Thumbs.db
+Thumbs.dbtest.db
+test_*.py

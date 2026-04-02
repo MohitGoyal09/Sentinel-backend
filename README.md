@@ -1,1049 +1,709 @@
-# 🛡️ Sentinel Backend
+# Sentinel Backend
 
-> **AI-Powered Employee Insights Engine**  
-> The core intelligence hub implementing the "Three Engines" architecture with privacy-first principles.
-
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white)](https://www.postgresql.org)
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+AI-powered employee insight engine. FastAPI + PostgreSQL + Redis backend implementing the Three Engines architecture with privacy-by-design principles.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
+- [Backend Architecture Overview](#backend-architecture-overview)
+- [API Endpoints Summary](#api-endpoints-summary)
+- [Database Schema Overview](#database-schema-overview)
+- [Authentication and Security Model](#authentication-and-security-model)
+- [Environment Variables](#environment-variables)
 - [Running the Application](#running-the-application)
-- [API Documentation](#api-documentation)
-- [Architecture Overview](#architecture-overview)
-- [Database Schema](#database-schema)
-- [The Three Engines](#the-three-engines)
-- [Development Guide](#development-guide)
-- [Deployment](#deployment)
-- [Security & Privacy](#security--privacy)
+- [Running Tests](#running-tests)
+- [Key Modules Explained](#key-modules-explained)
 
 ---
 
-## Overview
-
-Sentinel Backend is a sophisticated AI-powered employee insights platform designed to proactively detect burnout, identify hidden talent, and monitor team health while maintaining strict privacy standards. Built on a "Three Engines" architecture, it analyzes behavioral patterns through a privacy-preserving "Two-Vault" system.
-
-### Key Capabilities
-
-- 🔮 **Predictive Burnout Detection**: Identify at-risk employees up to 30 days in advance
-- 💎 **Hidden Gem Discovery**: Uncover high-impact contributors through network analysis
-- 🌡️ **Culture Health Monitoring**: Detect team-level sentiment shifts and resignation contagion
-- 🔒 **Privacy by Design**: Zero-knowledge architecture with cryptographic separation
-
----
-
-## Features
-
-### 🚀 Three-Engine System
-
-| Engine | Purpose | Key Metrics |
-|--------|---------|-------------|
-| **Safety Valve** | Burnout detection & prevention | Sentiment velocity, circadian entropy, belongingness score |
-| **Talent Scout** | Hidden gem identification | Betweenness centrality, eigenvector centrality, unblocking count |
-| **Culture Thermometer** | Team health monitoring | Graph fragmentation, communication decay, contagion risk |
-
-### 🔐 Two-Vault Privacy Architecture
-
-- **Vault A (Analytics)**: Stores anonymized behavioral hashes and events
-- **Vault B (Identity)**: Stores encrypted identity mapping with audit trails
-- **Zero-Knowledge**: Analytics engine never processes PII directly
-
-### 📡 Real-Time Capabilities
-
-- **WebSocket Updates**: Live risk score updates to dashboards
-- **Event Streaming**: Real-time behavioral event injection for demos
-- **Simulation System**: Digital twins for testing and demonstration
-
-### 🧪 Simulation & Testing
-
-- **Digital Twins**: Create realistic employee personas with synthetic data
-- **Event Injection**: Simulate real-world scenarios (late nights, conflicts, achievements)
-- **Scenario Testing**: Validate engine responses in controlled environments
-
----
-
-## Tech Stack
-
-### Core Framework
-- **[FastAPI](https://fastapi.tiangolo.com/)** - Modern, high-performance web framework
-- **[SQLAlchemy](https://www.sqlalchemy.org/)** - SQL toolkit and ORM
-- **[Pydantic](https://docs.pydantic.dev/)** - Data validation using Python type hints
-
-### Data & Analytics
-- **[PostgreSQL](https://www.postgresql.org/)** - Primary database (supports Supabase)
-- **[NetworkX](https://networkx.org/)** - Graph analysis and network metrics
-- **[NumPy](https://numpy.org/) / [SciPy](https://scipy.org/)** - Numerical computing and statistics
-
-### AI & LLM Integration
-- **[LiteLLM](https://docs.litellm.ai/)** - Universal LLM API gateway
-- **Provider Agnostic**: Supports OpenAI, Gemini, Anthropic, Grok, and more
-
-### Real-Time Communication
-- **WebSocket Protocol** - Bidirectional communication for live updates
-- **Async Support** - Full async/await implementation for scalability
-
----
-
-## Prerequisites
-
-### Required
-
-- **Python 3.11+** - [Download](https://www.python.org/downloads/)
-- **PostgreSQL 14+** - Local instance or [Supabase](https://supabase.com/) account
-- **Git** - For cloning the repository
-
-### Optional
-
-- **Docker** - For containerized deployment
-- **Docker Compose** - For multi-service orchestration
-- **uv** - Fast Python package installer (recommended)
-
-### System Requirements
-
-- **RAM**: 4GB minimum, 8GB recommended
-- **Storage**: 2GB for application, additional space for database
-- **Network**: Outbound HTTPS for LLM API calls
-
----
-
-## Installation
-
-### Option 1: Docker (Recommended for Quick Start)
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd sentinel/backend
-
-# Start with Docker Compose
-docker-compose up --build
-```
-
-### Option 2: Local Development
-
-#### Step 1: Environment Setup
-
-```bash
-# Navigate to backend directory
-cd backend
-
-# Create virtual environment (using venv)
-python -m venv .venv
-
-# Activate virtual environment
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-```
-
-#### Step 2: Install Dependencies
-
-**Using uv (Recommended - Faster):**
-```bash
-# Install uv if not already installed
-pip install uv
-
-# Install dependencies
-uv pip install -r requirements.txt
-```
-
-**Using pip:**
-```bash
-pip install -r requirements.txt
-```
-
-#### Step 3: Environment Configuration
-
-```bash
-# Copy example environment file
-cp .env.example .env
-
-# Edit .env with your credentials
-# See Configuration section for details
-```
-
-#### Step 4: Database Initialization
-
-```bash
-# The application will auto-create tables on first run
-# For production, use Alembic migrations:
-# alembic upgrade head
-```
-
----
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file in the `backend/` directory with the following variables:
-
-#### Database Configuration
-
-| Variable | Description | Required | Example |
-|----------|-------------|----------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | ✅ | `postgresql://user:pass@host:5432/db` |
-
-#### Security Keys
-
-| Variable | Description | Required | Example |
-|----------|-------------|----------|---------|
-| `VAULT_SALT` | Salt for identity hashing | ✅ | `random-salt-string-32-chars` |
-| `ENCRYPTION_KEY` | Fernet 32-byte encryption key | ✅ | `base64-encoded-key` |
-
-**Generating Encryption Key:**
-```python
-from cryptography.fernet import Fernet
-key = Fernet.generate_key()
-print(key.decode())  # Copy this to ENCRYPTION_KEY
-```
-
-#### LLM Configuration
-
-| Variable | Description | Default | Options |
-|----------|-------------|---------|---------|
-| `LLM_PROVIDER` | LLM provider | `gemini` | `gemini`, `openai`, `anthropic` |
-| `LLM_MODEL` | Model name | `gemini-pro` | Provider-specific |
-| `LLM_API_KEY` | API key for chosen provider | - | Your API key |
-| `OPENAI_API_KEY` | OpenAI-specific key | - | Your OpenAI key |
-
-#### External Integrations
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `SLACK_BOT_TOKEN` | Slack Bot OAuth token | ❌ |
-| `PAGERDUTY_API_KEY` | PagerDuty API key | ❌ |
-| `JIRA_API_KEY` | Jira API key | ❌ |
-| `GOOGLE_CALENDAR_KEY` | Google Calendar API key | ❌ |
-
-#### Application Settings
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SIMULATION_MODE` | Enable simulation features | `True` |
-| `DATA_RETENTION_DAYS` | Days to retain analytics data | `90` |
-
-### Complete `.env` Example
-
-```env
-# Database
-DATABASE_URL=postgresql://postgres:password@localhost:5432/sentinel
-
-# Security
-VAULT_SALT=your-random-salt-string-here
-ENCRYPTION_KEY=your-fernet-generated-key-here
-
-# LLM (using Gemini)
-LLM_PROVIDER=gemini
-LLM_MODEL=gemini-pro
-LLM_API_KEY=your-gemini-api-key
-
-# Optional Integrations
-SLACK_BOT_TOKEN=xoxb-your-slack-token
-OPENAI_API_KEY=sk-your-openai-key
-
-# Application
-SIMULATION_MODE=true
-DATA_RETENTION_DAYS=90
-```
-
----
-
-## Running the Application
-
-### Local Development
-
-```bash
-# Start development server with hot reload
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Or using Python module
-python -m uvicorn app.main:app --reload
-```
-
-The API will be available at:
-- **API Base**: http://localhost:8000
-- **Interactive Docs**: http://localhost:8000/docs (Swagger UI)
-- **Alternative Docs**: http://localhost:8000/redoc (ReDoc)
-
-### Docker
-
-```bash
-# Build and run
-docker-compose up --build
-
-# Run in background
-docker-compose up -d
-
-# View logs
-docker-compose logs -f backend
-
-# Stop
-docker-compose down
-```
-
-### Production
-
-```bash
-# Using Gunicorn with Uvicorn workers
-gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
-
-# Or with environment variables
-ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
----
-
-## API Documentation
-
-### Base URL
-
-```
-Development: http://localhost:8000
-Production:  https://your-domain.com
-```
-
-### Authentication
-
-Currently, the API uses hash-based identification. Each user is identified by a SHA-256 hash of their email, ensuring privacy while maintaining unique identification.
-
-### Core Endpoints
-
-#### Health Check
-
-```http
-GET /health
-```
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0"
-}
-```
-
-#### Root Endpoint
-
-```http
-GET /
-```
-
-**Response:**
-```json
-{
-  "status": "Sentinel",
-  "engines": ["Safety Valve", "Talent Scout", "Culture Thermometer"]
-}
-```
-
-### Engine Endpoints
-
-#### Safety Valve - Burnout Analysis
-
-```http
-GET /api/v1/engines/users/{user_hash}/safety
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "engine": "Safety Valve",
-    "risk_level": "ELEVATED",
-    "velocity": 2.1,
-    "confidence": 0.87,
-    "belongingness_score": 0.45,
-    "circadian_entropy": 0.72,
-    "indicators": {
-      "late_night_pattern": true,
-      "weekend_work": false,
-      "communication_decline": true
-    }
-  }
-}
-```
-
-#### Talent Scout - Network Analysis
-
-```http
-GET /api/v1/engines/users/{user_hash}/talent
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "engine": "Talent Scout",
-    "top_performers": [
-      {
-        "user_hash": "a1b2c3...",
-        "betweenness": 0.85,
-        "eigenvector": 0.72,
-        "unblocking": 12,
-        "is_hidden_gem": true
-      }
-    ]
-  }
-}
-```
-
-#### Culture Thermometer - Team Analysis
-
-```http
-POST /api/v1/engines/teams/culture
-Content-Type: application/json
-
-{
-  "team_hashes": ["hash1", "hash2", "hash3"]
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "engine": "Culture Thermometer",
-    "team_risk": "ELEVATED",
-    "metrics": {
-      "avg_velocity": 1.8,
-      "critical_members": 1,
-      "graph_fragmentation": 0.65,
-      "comm_decay_rate": 0.23
-    },
-    "recommendation": "Schedule team retrospective within 48 hours"
-  }
-}
-```
-
-### Simulation Endpoints
-
-#### Create Persona
-
-```http
-POST /api/v1/engines/personas
-Content-Type: application/json
-
-{
-  "email": "demo@example.com",
-  "persona_type": "alex_burnout"
-}
-```
-
-**Persona Types:**
-- `alex_burnout` - High burnout risk pattern
-- `sarah_gem` - Hidden gem (high centrality, low visibility)
-- `jordan_steady` - Stable baseline pattern
-- `maria_contagion` - Team contagion risk pattern
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "user_hash": "sha256-hash",
-    "events_count": 150,
-    "persona": "alex_burnout"
-  }
-}
-```
-
-#### Inject Real-Time Event
-
-```http
-POST /api/v1/engines/events
-Content-Type: application/json
-
-{
-  "user_hash": "sha256-hash",
-  "current_risk": "ELEVATED"
-}
-```
-
-### Context Enrichment
-
-```http
-GET /api/v1/engines/users/{user_hash}/context?timestamp=2024-01-15T10:00:00Z
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "user_hash": "sha256-hash",
-    "timestamp": "2024-01-15T10:00:00",
-    "context": {
-      "is_explained": true,
-      "explanation": "On-call rotation",
-      "source": "pagerduty"
-    }
-  }
-}
-```
-
-### WebSocket Protocol
-
-Connect to WebSocket for real-time updates:
-
-```javascript
-// Personal dashboard connection
-const ws = new WebSocket('ws://localhost:8000/ws/{user_hash}');
-
-// Admin/team dashboard connection
-const ws = new WebSocket('ws://localhost:8000/ws/admin/team');
-```
-
-**Client → Server Messages:**
-
-```json
-// Ping to keep connection alive
-{"action": "ping"}
-
-// Request immediate update
-{"action": "request_update"}
-```
-
-**Server → Client Messages:**
-
-```json
-// Pong response
-{"type": "pong", "timestamp": "2024-01-15T10:00:00Z"}
-
-// Risk update
-{
-  "type": "risk_update",
-  "data": {
-    "user_hash": "...",
-    "risk_level": "CRITICAL",
-    "velocity": 3.2
-  }
-}
-
-// Manual refresh response
-{
-  "type": "manual_refresh",
-  "data": { /* full analysis */ }
-}
-```
-
----
-
-## Architecture Overview
+## Backend Architecture Overview
 
 ### Directory Structure
 
 ```
 backend/
 ├── app/
-│   ├── api/              # API layer
-│   │   ├── v1/           # API version 1
-│   │   │   ├── endpoints/# Route handlers
-│   │   │   └── api.py    # Router aggregation
-│   │   ├── deps.py       # Dependencies (DB session, auth)
-│   │   └── websocket.py  # WebSocket handlers
-│   ├── core/             # Core infrastructure
-│   │   ├── config.py     # Application settings
-│   │   ├── database.py   # SQLAlchemy setup
-│   │   ├── security.py   # Encryption & hashing
-│   │   └── vault.py      # Two-Vault implementation
-│   ├── models/           # Database models
-│   │   ├── analytics.py  # Vault A models
-│   │   └── identity.py   # Vault B models
-│   ├── schemas/          # Pydantic models
-│   │   └── engines.py    # Request/response schemas
-│   └── services/         # Business logic
-│       ├── safety_valve.py      # Burnout detection
-│       ├── talent_scout.py      # Network analysis
-│       ├── culture_temp.py      # Team health
-│       ├── simulation.py        # Digital twins
-│       ├── context.py           # Context enrichment
-│       ├── nudge_dispatcher.py  # Intervention system
-│       ├── websocket_manager.py # Connection management
-│       ├── llm.py               # LLM integration
-│       └── slack.py             # Slack integration
-├── tests/                # Test suite
-├── .env.example          # Environment template
-├── requirements.txt      # Dependencies
-├── pyproject.toml        # Project metadata
-└── Dockerfile            # Container definition
+│   ├── api/
+│   │   ├── v1/
+│   │   │   ├── endpoints/          # One router file per domain
+│   │   │   │   ├── admin.py        # System admin (health, audit logs, user mgmt)
+│   │   │   │   ├── ai.py           # AI chat, narrative reports, semantic query
+│   │   │   │   ├── analytics.py    # Team energy heatmap
+│   │   │   │   ├── auth.py         # Login, register, refresh, logout
+│   │   │   │   ├── auth_enhanced.py# MFA, passkeys, session management
+│   │   │   │   ├── demo.py         # Demo scenarios and seeding
+│   │   │   │   ├── engines.py      # Three Engines: Safety Valve, Talent Scout, Culture Therm.
+│   │   │   │   ├── ingestion.py    # Bulk data ingestion (CSV, webhooks)
+│   │   │   │   ├── me.py           # Employee self-service (consent, pause, delete)
+│   │   │   │   ├── notifications.py# In-app notification CRUD
+│   │   │   │   ├── organizations.py# Organization management
+│   │   │   │   ├── roi.py          # ROI/burnout cost calculator
+│   │   │   │   ├── sso.py          # SSO initiation and callbacks
+│   │   │   │   ├── team.py         # Team analytics and comparisons
+│   │   │   │   ├── tenants.py      # Multi-tenant management
+│   │   │   │   ├── tools.py        # External tool execution via Composio
+│   │   │   │   └── users.py        # User search and directory
+│   │   │   └── api.py              # Router aggregation
+│   │   ├── deps/
+│   │   │   └── auth.py             # Auth dependencies and role guards
+│   │   └── websocket.py            # WebSocket endpoint handlers
+│   ├── core/
+│   │   ├── database.py             # SQLAlchemy engine and session factory
+│   │   ├── logging_config.py       # Structured logging setup
+│   │   ├── rate_limiter.py         # Token-bucket rate limiting middleware
+│   │   ├── redis_client.py         # Async Redis client wrapper
+│   │   ├── response.py             # Standardized success/error response helpers
+│   │   ├── security.py             # PrivacyEngine (hashing + Fernet encryption)
+│   │   ├── supabase.py             # Supabase client factory
+│   │   └── vault.py                # Two-Vault identity store abstraction
+│   ├── integrations/
+│   │   └── composio_client.py      # Composio tool router (Calendar, Slack, GitHub)
+│   ├── middleware/
+│   │   ├── request_id.py           # Attach X-Request-ID to every request
+│   │   ├── security.py             # OWASP headers and input sanitization
+│   │   └── tenant_context.py       # Extract tenant_id from JWT or header
+│   ├── models/
+│   │   ├── analytics.py            # Vault A: Events, RiskScore, GraphEdge, etc.
+│   │   ├── identity.py             # Vault B: UserIdentity, AuditLog
+│   │   ├── notification.py         # Notification, NotificationPreference, Template
+│   │   ├── tenant.py               # Tenant, TenantMember
+│   │   └── workflow.py             # UserIntegration, WorkflowTemplate, WorkflowExecution
+│   ├── orchestrator/               # AI agent orchestration layer
+│   ├── schemas/
+│   │   ├── ai.py                   # AI endpoint request/response schemas
+│   │   ├── auth.py                 # Auth endpoint schemas
+│   │   ├── common.py               # Shared schemas
+│   │   ├── engines.py              # Engine endpoint schemas
+│   │   └── tenant.py               # Tenant schemas
+│   ├── services/
+│   │   ├── safety_valve.py         # Burnout detection engine
+│   │   ├── talent_scout.py         # Network centrality engine
+│   │   ├── culture_temp.py         # Team health engine
+│   │   ├── llm.py                  # LiteLLM wrapper (Gemini, OpenAI)
+│   │   ├── simulation.py           # Digital twin / persona generator
+│   │   ├── sir_model.py            # SIR epidemic contagion forecasting
+│   │   ├── context.py              # External context enrichment (PagerDuty, Jira)
+│   │   ├── nudge_dispatcher.py     # Intervention nudge dispatch
+│   │   ├── permission_service.py   # RBAC permission checks
+│   │   ├── sso_service.py          # SSO provider registry
+│   │   ├── slack.py                # Slack integration
+│   │   ├── talent_scout.py         # Network analysis
+│   │   ├── tool_augmented_llm.py   # LLM with tool calling
+│   │   └── websocket_manager.py    # WebSocket connection registry
+│   ├── config.py                   # Settings via pydantic-settings
+│   └── main.py                     # FastAPI app factory and startup
+├── alembic/                        # Alembic migration scripts
+├── tests/                          # Pytest test suite
+├── requirements.txt
+├── pyproject.toml
+└── Dockerfile
 ```
 
-### Two-Vault System Explained
+### Request Lifecycle
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        VAULT A (Analytics)                   │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │  Events  │  │  Risk Scores │  │  Graph Edges         │  │
-│  │ (hashed) │  │  (hashed)    │  │  (hashed)            │  │
-│  └──────────┘  └──────────────┘  └──────────────────────┘  │
-│                                                              │
-│  • No PII stored                                            │
-│  • Used for ML/AI analysis                                  │
-│  • Analytics engine operates here                           │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ Hash-based lookup only
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       VAULT B (Identity)                     │
-│  ┌──────────────────┐  ┌──────────────────────────────┐    │
-│  │  User Identity   │  │  Audit Logs                  │    │
-│  │  (encrypted)     │  │  (immutable)                 │    │
-│  │  - email         │  │  - nudge_sent                │    │
-│  │  - slack_id      │  │  - data_deleted              │    │
-│  └──────────────────┘  └──────────────────────────────┘    │
-│                                                              │
-│  • PII encrypted with Fernet                                │
-│  • Only accessed for high-priority nudges                   │
-│  • Complete audit trail                                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Event     │────▶│  Hash &      │────▶│   Vault A       │
-│   Source    │     │  Encrypt     │     │   (Analytics)   │
-└─────────────┘     └──────────────┘     └─────────────────┘
-                                                │
-                                                ▼
-                                         ┌──────────────┐
-                                         │  Three       │
-                                         │  Engines     │
-                                         └──────────────┘
-                                                │
-                           ┌────────────────────┼────────────────────┐
-                           ▼                    ▼                    ▼
-                    ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-                   Safety Valve   │     Talent Scout   │     Culture Temp │
-                    └─────────────┘      └─────────────┘      └─────────────┘
-                           │                    │                    │
-                           └────────────────────┼────────────────────┘
-                                                ▼
-                                         ┌──────────────┐
-                                         │  Nudge       │
-                                         │  Dispatcher  │
-                                         └──────────────┘
-                                                │
-                           ┌────────────────────┘
-                           ▼
-                    ┌─────────────┐
-                    │  Vault B    │
-                    │  (Decrypt   │
-                    │   & Notify) │
-                    └─────────────┘
+HTTP Request
+    │
+    ▼
+RequestIDMiddleware       — assigns X-Request-ID
+    │
+    ▼
+SecurityMiddleware        — OWASP headers, input sanitization
+    │
+    ▼
+TenantContextMiddleware   — extracts tenant_id from JWT or X-Tenant-ID header
+    │
+    ▼
+RateLimitMiddleware       — token-bucket per IP
+    │
+    ▼
+CORSMiddleware
+    │
+    ▼
+FastAPI Router            — auth dependency injects current user from Supabase JWT
+    │
+    ▼
+Endpoint Handler          — calls services / engines
+    │
+    ▼
+Service Layer             — business logic, RBAC checks
+    │
+    ▼
+SQLAlchemy ORM / Redis
 ```
 
 ---
 
-## Database Schema
+## API Endpoints Summary
 
-### Vault A (Analytics Schema)
+All endpoints are prefixed with `/api/v1`. Authentication is required on all endpoints unless noted.
 
-#### Events Table
+### System
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | Integer (PK) | Auto-increment ID |
-| `user_hash` | String(64) | SHA-256 hash of user email |
-| `timestamp` | DateTime | Event occurrence time |
-| `event_type` | String(50) | Type: commit, pr_review, slack_message, unblocked |
-| `target_user_hash` | String(64) | For graph edges (nullable) |
-| `metadata` | JSON | Additional event data |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/` | None | Engine status |
+| `GET` | `/health` | None | Health check (version) |
+| `GET` | `/ready` | None | Readiness probe (DB + Redis) |
 
-#### Risk Scores Table
+### Auth (`/auth`)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_hash` | String(64) (PK) | User identifier |
-| `velocity` | Float | Sentiment velocity score |
-| `risk_level` | String(20) | LOW, ELEVATED, CRITICAL |
-| `confidence` | Float | Confidence score (0-1) |
-| `thwarted_belongingness` | Float | Psychological metric |
-| `updated_at` | DateTime | Last calculation time |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/register` | None | Create account and default tenant |
+| `POST` | `/auth/login` | None | Sign in, returns JWT pair and tenant list |
+| `POST` | `/auth/refresh` | None | Refresh access token |
+| `POST` | `/auth/logout` | Required | Sign out |
+| `POST` | `/auth/forgot-password` | None | Send password reset email |
+| `POST` | `/auth/reset-password` | None | Set new password using reset token |
+| `GET` | `/auth/me` | Required | Current user profile and tenants |
+| `POST` | `/auth/switch-tenant` | Required | Switch active workspace |
 
-#### Graph Edges Table
+### SSO (`/sso`)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | Integer (PK) | Auto-increment ID |
-| `source_hash` | String(64) | Source user hash |
-| `target_hash` | String(64) | Target user hash |
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/sso/{provider}/login` | Initiate SSO flow (google, azure_ad, saml) |
+| `GET` | `/sso/{provider}/callback` | OAuth/SAML callback handler |
+
+### Engines (`/engines`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/engines/personas` | Optional | Create simulation persona with 30 days of synthetic data |
+| `GET` | `/engines/users/{user_hash}/context` | Optional | Contextual explanation for a timestamp |
+| `GET` | `/engines/users/{user_hash}/safety` | Optional | Safety Valve burnout analysis |
+| `GET` | `/engines/users/{user_hash}/talent` | Optional | Talent Scout network analysis |
+| `POST` | `/engines/teams/culture` | Optional | Culture Thermometer team analysis |
+| `POST` | `/engines/teams/forecast` | Optional | SIR contagion forecast |
+| `GET` | `/engines/users/{user_hash}/nudge` | Optional | Generate LLM nudge message |
+| `POST` | `/engines/users/{user_hash}/nudge/dismiss` | Required | Dismiss active nudge |
+| `POST` | `/engines/users/{user_hash}/nudge/schedule-break` | Required | Log break scheduling action |
+| `GET` | `/engines/events` | Optional | Recent activity stream |
+| `POST` | `/engines/events/inject` | Optional | Inject simulated event |
+| `GET` | `/engines/users` | Optional | Paginated user list with risk scores |
+| `GET` | `/engines/users/{user_hash}/history` | Optional | Risk score history (default 30 days) |
+| `GET` | `/engines/network/global/talent` | Optional | Global talent network analysis |
+| `GET` | `/engines/global/network` | Optional | Global network metrics |
+| `GET` | `/engines/dashboard/summary` | Optional | Role-filtered dashboard summary |
+| `POST` | `/engines/users/{user_hash}/seed-history` | Optional | Seed historical data (admin/demo) |
+
+### AI (`/ai`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/ai/report/risk/{user_hash}` | Required | LLM narrative risk report for a user |
+| `GET` | `/ai/report/team/{team_hash}` | Required | LLM team health narrative |
+| `GET` | `/ai/narratives/team/{team_hash}` | Required | Alias for team report |
+| `POST` | `/ai/copilot/agenda` | Required | Generate 1:1 talking points |
+| `POST` | `/ai/query` | Required | Natural language query over employee data |
+| `POST` | `/ai/chat` | Required | Role-aware AI chat (employee/manager/admin) |
+| `POST` | `/ai/chat/stream` | Required | Streaming SSE version of chat |
+
+### Me (`/me`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/me/` | Required | Own profile, risk score, audit trail |
+| `PUT` | `/me/consent` | Required | Update consent settings |
+| `POST` | `/me/pause-monitoring` | Required | Pause monitoring for N hours |
+| `DELETE` | `/me/data` | Required | GDPR right-to-be-forgotten (delete all data) |
+| `GET` | `/me/risk` | Required | Own current risk score |
+| `GET` | `/me/history` | Required | Own risk history |
+
+### Admin (`/admin`)
+
+| Method | Path | Auth | Role |
+|---|---|---|---|
+| `GET` | `/admin/health` | Required | admin |
+| `GET` | `/admin/audit-logs` | Required | admin |
+| `GET` | `/admin/users` | Required | admin |
+| `PUT` | `/admin/users/{user_hash}/role` | Required | admin |
+
+### Notifications (`/notifications`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/notifications/` | Required | List notifications (filterable by unread) |
+| `POST` | `/notifications/{id}/read` | Required | Mark notification as read |
+| `POST` | `/notifications/read-all` | Required | Mark all notifications as read |
+| `DELETE` | `/notifications/{id}` | Required | Delete a notification |
+| `GET` | `/notifications/preferences` | Required | Get notification preferences |
+| `PUT` | `/notifications/preferences` | Required | Update notification preferences |
+
+### External Tools (`/tools`)
+
+Requires `COMPOSIO_API_KEY` to be configured.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/tools/status` | Required | Check which tools are connected |
+| `POST` | `/tools/execute` | Required | Execute a tool action (calendar, slack, github) |
+| `POST` | `/tools/calendar/analyze` | Required | Analyze calendar meeting load for burnout signals |
+| `GET` | `/tools/calendar/events/{entity_id}` | Required | Fetch calendar events |
+| `POST` | `/tools/slack/activity` | Required | Get Slack activity metrics |
+
+### Analytics (`/analytics`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/analytics/team-energy-heatmap` | None | Daily risk aggregates for heatmap (default 30 days) |
+
+### Tenants (`/tenants`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/tenants/` | Required | List user's tenants |
+| `POST` | `/tenants/` | Required | Create new tenant |
+| `GET` | `/tenants/{id}` | Required | Get tenant details |
+| `PUT` | `/tenants/{id}` | Required | Update tenant settings |
+
+### ROI (`/roi`)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/roi/calculate` | Calculate estimated burnout cost based on team size and risk data |
+
+### WebSocket
+
+| Path | Description |
+|---|---|
+| `ws://.../ws/{user_hash}` | Real-time risk updates for a specific user |
+| `ws://.../ws/admin/team` | Admin/team-level broadcast channel |
+
+---
+
+## Database Schema Overview
+
+Sentinel uses two PostgreSQL schemas to enforce the Two-Vault privacy boundary.
+
+### Schema: `analytics` (Vault A — no PII)
+
+#### `events`
+
+Raw behavioral events. The analytics engine operates exclusively on these hashes.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | Auto-increment |
+| `user_hash` | String(64) | SHA-256 HMAC of email |
+| `tenant_id` | UUID | Multi-tenant isolation |
+| `timestamp` | DateTime | Event time |
+| `event_type` | String(50) | `commit`, `pr_review`, `slack_message`, `unblocked` |
+| `target_user_hash` | String(64) | For directed graph edges (nullable) |
+| `metadata` | JSON | Event-specific payload |
+
+Indexes: `(user_hash, timestamp)`, `event_type`.
+
+#### `risk_scores`
+
+Latest Safety Valve output per user.
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_hash` | String(64) (PK) | |
+| `tenant_id` | UUID | |
+| `velocity` | Float | Sentiment velocity (higher = more erratic) |
+| `risk_level` | String(20) | `LOW`, `ELEVATED`, `CRITICAL` |
+| `confidence` | Float | Statistical confidence (0–1) |
+| `thwarted_belongingness` | Float | Interpersonal theory metric (0–1) |
+| `updated_at` | DateTime | |
+
+#### `risk_history`
+
+Time-series snapshots for trend charts.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `user_hash` | String(64) | Indexed |
+| `tenant_id` | UUID | |
+| `risk_level` | String(20) | |
+| `velocity` | Float | |
+| `confidence` | Float | |
+| `belongingness_score` | Float | |
+| `timestamp` | DateTime | |
+
+Index: `(user_hash, timestamp)`.
+
+#### `graph_edges`
+
+Social collaboration graph for the Culture Thermometer.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `tenant_id` | UUID | |
+| `source_hash` | String(64) | |
+| `target_hash` | String(64) | |
 | `weight` | Float | Interaction frequency |
-| `last_interaction` | DateTime | Last interaction timestamp |
-| `edge_type` | String(20) | mentorship, collaboration, blocking |
+| `last_interaction` | DateTime | |
+| `edge_type` | String(20) | `mentorship`, `collaboration`, `blocking` |
 
-#### Centrality Scores Table
+#### `centrality_scores`
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_hash` | String(64) (PK) | User identifier |
-| `betweenness` | Float | Bridge between disconnected groups |
+Talent Scout outputs per user.
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_hash` | String(64) (PK) | |
+| `tenant_id` | UUID | |
+| `betweenness` | Float | Bridges disconnected groups |
 | `eigenvector` | Float | Connected to important people |
 | `unblocking_count` | Integer | Times unblocked others |
-| `knowledge_transfer_score` | Float | Knowledge sharing metric |
-| `calculated_at` | DateTime | Calculation timestamp |
+| `knowledge_transfer_score` | Float | |
+| `calculated_at` | DateTime | |
 
-### Vault B (Identity Schema)
+#### `skill_profiles`
 
-#### Users Table
+Employee skill dimensions for radar chart visualization.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_hash` | String(64) (PK) | SHA-256 hash (links to Vault A) |
-| `email_encrypted` | LargeBinary | Fernet-encrypted email |
-| `slack_id_encrypted` | LargeBinary | Fernet-encrypted Slack ID |
-| `created_at` | DateTime | Account creation time |
-
-#### Audit Logs Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | Integer (PK) | Auto-increment ID |
-| `user_hash` | String(64) | User identifier (indexed) |
-| `action` | String(50) | Action type: nudge_sent, data_deleted |
-| `details` | JSON | Additional action data |
-| `timestamp` | DateTime | Action timestamp |
-
-### Relationships
-
-```
-Vault A (Analytics)              Vault B (Identity)
-───────────────────              ──────────────────
-
-Events.user_hash ───────────────▶ Users.user_hash
-RiskScores.user_hash ───────────▶ Users.user_hash
-GraphEdges.source_hash ─────────▶ Users.user_hash
-GraphEdges.target_hash ─────────▶ Users.user_hash
-AuditLogs.user_hash ────────────▶ Users.user_hash
-```
+| Column | Type | Notes |
+|---|---|---|
+| `user_hash` | String(64) (PK) | |
+| `tenant_id` | UUID | |
+| `technical` | Float | 0–100 |
+| `communication` | Float | 0–100 |
+| `leadership` | Float | 0–100 |
+| `collaboration` | Float | 0–100 |
+| `adaptability` | Float | 0–100 |
+| `creativity` | Float | 0–100 |
+| `updated_at` | DateTime | |
 
 ---
 
-## The Three Engines
+### Schema: `identity` (Vault B — encrypted PII)
 
-### 🔥 Safety Valve
+#### `users`
 
-**Purpose**: Detect and prevent employee burnout before it becomes critical.
+Encrypted identity records. Only accessed when a nudge must be delivered or for RBAC lookups.
 
-**How It Works**:
-1. **Sentiment Velocity Analysis**: Tracks the rate of change in work patterns
-2. **Circadian Entropy**: Measures disruption to normal working hours
-3. **Thwarted Belongingness**: Detects social disconnection patterns
+| Column | Type | Notes |
+|---|---|---|
+| `user_hash` | String(64) (PK) | Links to Vault A |
+| `tenant_id` | UUID | |
+| `email_encrypted` | LargeBinary | Fernet-encrypted |
+| `slack_id_encrypted` | LargeBinary | Nullable |
+| `role` | String(20) | `employee`, `manager`, `admin` |
+| `consent_share_with_manager` | Boolean | |
+| `consent_share_anonymized` | Boolean | Default `true` |
+| `monitoring_paused_until` | DateTime | Nullable |
+| `manager_hash` | String(64) | Nullable |
+| `created_at` | DateTime | |
 
-**Key Metrics**:
-- **Velocity Score**: Rate of negative sentiment change
-- **Risk Level**: LOW → ELEVATED → CRITICAL
-- **Confidence**: Statistical confidence in the assessment
+#### `audit_logs`
 
-**Intervention Triggers**:
-- Velocity > 1.5 → ELEVATED risk
-- Velocity > 2.5 → CRITICAL risk
-- Automatic nudge dispatch at CRITICAL level
+Immutable access trail.
 
-### 💎 Talent Scout
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `user_hash` | String(64) | |
+| `action` | String(50) | `nudge_sent`, `data_deleted`, `nudge_dismissed`, etc. |
+| `details` | JSON | |
+| `timestamp` | DateTime | |
 
-**Purpose**: Identify "hidden gems" - high-impact employees who may be overlooked.
+#### `tenants`
 
-**How It Works**:
-1. **Network Analysis**: Builds interaction graphs from collaboration data
-2. **Centrality Metrics**: Calculates betweenness and eigenvector centrality
-3. **Unblocking Detection**: Identifies who removes blockers for others
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `name` | String(255) | |
+| `slug` | String(100) | Unique |
+| `plan` | String(50) | `free`, `pro`, `enterprise` |
+| `status` | String(20) | `active`, `suspended` |
+| `settings` | JSON | |
 
-**Key Metrics**:
-- **Betweenness Centrality**: Bridges between disconnected groups
-- **Eigenvector Centrality**: Connected to other important people
-- **Unblocking Count**: Times helped unblock colleagues
-- **Knowledge Transfer Score**: Effectiveness in sharing knowledge
+#### `tenant_members`
 
-**Hidden Gem Criteria**:
-- High betweenness (> 0.7)
-- High unblocking count (> 10)
-- Low traditional visibility metrics
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `tenant_id` | UUID | FK → tenants |
+| `user_hash` | String(64) | FK → users |
+| `role` | String(20) | `owner`, `admin`, `member` |
+| `invited_by` | String(64) | |
+| `joined_at` | DateTime | |
 
-### 🌡️ Culture Thermometer
+Unique constraint: `(tenant_id, user_hash)`.
 
-**Purpose**: Monitor team-level health and detect resignation contagion risks.
+#### `notifications`
 
-**How It Works**:
-1. **Aggregate Analysis**: Combines individual risk scores across the team
-2. **Graph Fragmentation**: Measures social cohesion decay
-3. **Communication Decay**: Tracks reduction in team interactions
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `user_hash` | String(64) | FK → users |
+| `tenant_id` | UUID | |
+| `type` | String(50) | `auth`, `team`, `system`, `security`, `activity` |
+| `title` | String(255) | |
+| `message` | String(1000) | |
+| `data` | JSON | |
+| `priority` | String(20) | `low`, `normal`, `high`, `critical` |
+| `read_at` | DateTime | Nullable |
+| `created_at` | DateTime | |
 
-**Key Metrics**:
-- **Average Velocity**: Team-wide sentiment trend
-- **Critical Members**: Count of individuals at CRITICAL risk
-- **Graph Fragmentation**: 0 (cohesive) to 1 (fragmented)
-- **Communication Decay Rate**: Rate of interaction decline
+Indexes: `(user_hash, read_at)`, `(user_hash, created_at)`.
 
-**Contagion Risk Levels**:
-- **STABLE**: Team is healthy
-- **ELEVATED**: Some concerns, monitor closely
-- **HIGH_CONTAGION_RISK**: Immediate intervention recommended
+#### `notification_preferences`
 
----
+Per-channel, per-type preferences.
 
-## Development Guide
-
-### Adding New Features
-
-#### 1. Creating a New Endpoint
-
-```python
-# app/api/v1/endpoints/your_feature.py
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from app.api.deps import get_db
-
-router = APIRouter()
-
-@router.get("/your-endpoint")
-def your_endpoint(db: Session = Depends(get_db)):
-    # Your logic here
-    return {"success": True, "data": {}}
-```
-
-Register in [`app/api/v1/api.py`](app/api/v1/api.py):
-
-```python
-from app.api.v1.endpoints import your_feature
-router.include_router(your_feature.router, prefix="/your-feature")
-```
-
-#### 2. Adding a New Model
-
-```python
-# app/models/analytics.py (for Vault A)
-from sqlalchemy import Column, String, Float, DateTime
-from app.core.database import Base
-
-class YourModel(Base):
-    __tablename__ = "your_models"
-    __table_args__ = {"schema": "analytics"}
-    
-    user_hash = Column(String(64), primary_key=True)
-    your_metric = Column(Float)
-    created_at = Column(DateTime, default=datetime.utcnow)
-```
-
-#### 3. Creating a New Service
-
-```python
-# app/services/your_service.py
-from sqlalchemy.orm import Session
-
-class YourService:
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def analyze(self, user_hash: str):
-        # Your analysis logic
-        return {"result": "success"}
-```
-
-### Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=app --cov-report=html
-
-# Run specific test file
-pytest tests/test_safety_valve.py
-
-# Run with verbose output
-pytest -v
-```
-
-### Code Style
-
-```bash
-# Format with black
-black app/
-
-# Lint with ruff
-ruff check app/
-
-# Type checking
-mypy app/
-```
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `user_hash` | String(64) | FK → users |
+| `channel` | String(20) | `in_app`, `email`, `sms` |
+| `notification_type` | String(50) | `auth`, `team`, etc. |
+| `enabled` | Boolean | |
 
 ---
 
-## Deployment
+### Workflow Tables (public schema)
 
-### Docker Compose (Recommended)
+These support the Composio workflow automation feature.
 
-```yaml
-version: '3.8'
+#### `user_integrations`
 
-services:
-  backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - VAULT_SALT=${VAULT_SALT}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - LLM_API_KEY=${LLM_API_KEY}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-```
+OAuth connections per user.
 
-### Production Environment Variables
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `user_hash` | String(64) | |
+| `tenant_id` | UUID | |
+| `integration_id` | String(100) | e.g., `googlecalendar` |
+| `integration_name` | String(255) | |
+| `account_id` | String(100) | |
+| `account_identifier` | String(255) | Display identifier |
+| `scopes` | JSON | |
+| `provider` | String(50) | |
+| `status` | String(20) | `active`, `error`, `revoked` |
+| `connected_at` | DateTime | |
+| `last_used_at` | DateTime | |
+| `token_expires_at` | DateTime | |
+
+Unique constraint: `(user_hash, tenant_id, integration_id, account_id)`.
+
+#### `workflow_templates`
+
+Pre-built and custom automation templates.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `template_id` | String(50) | Unique slug |
+| `name` | String(255) | |
+| `description` | Text | |
+| `category` | String(50) | |
+| `prompt_template` | Text | LLM instruction template |
+| `required_integrations` | JSON | List of required tool names |
+| `optional_integrations` | JSON | |
+| `parameters` | JSON | User-configurable parameters |
+| `is_public` | Boolean | |
+| `is_system` | Boolean | |
+| `usage_count` | Integer | |
+
+#### `workflow_executions`
+
+Execution log for every workflow run.
+
+| Column | Type | Notes |
+|---|---|---|
+| `execution_id` | String(50) | Unique |
+| `workflow_id` | String(50) | |
+| `execution_type` | String(20) | `template`, `custom`, `scheduled` |
+| `template_id` | String(50) | If using a template |
+| `user_hash` | String(64) | |
+| `tenant_id` | UUID | |
+| `user_message` | Text | The user's original instruction |
+| `status` | String(20) | `running`, `completed`, `failed` |
+| `started_at` / `completed_at` | Timestamps | |
+| `execution_time_ms` | Integer | |
+| `tools_used` | JSON | List of Composio tools invoked |
+| `integrations_used` | JSON | |
+| `result_summary` | Text | |
+| `result_artifacts` | JSON | |
+| `full_conversation` | JSON | Complete LLM turn history |
+| `error_message` | Text | Nullable |
+
+---
+
+## Authentication and Security Model
+
+### Authentication Flow
+
+1. User registers or logs in via `POST /auth/register` or `POST /auth/login`.
+2. Credentials are validated against **Supabase Auth**.
+3. Supabase returns a JWT access token (15-minute lifetime) and refresh token (7-day lifetime).
+4. The frontend sends the access token as `Authorization: Bearer <token>` on all subsequent requests.
+5. The `get_current_user_identity` dependency validates the JWT against Supabase and loads the `UserIdentity` record from the local database.
+6. The `X-Tenant-ID` header or the `tenant_id` claim in the JWT sets the active tenant context.
+
+### Role-Based Access Control
+
+Three roles are enforced at the endpoint and service layers:
+
+| Role | Access scope |
+|---|---|
+| `employee` | Own data only; consent-gated manager sharing |
+| `manager` | Own data + direct reports (consent-dependent) + team aggregates |
+| `admin` | All data, system health, user management |
+
+The `require_role` dependency factory (`app/api/deps/auth.py`) enforces role membership and raises `403` on failure.
+
+The `PermissionService` (`app/services/permission_service.py`) provides fine-grained `can_view_user_data(accessor, target)` checks that respect both role and consent settings.
+
+### Privacy and Encryption
+
+- **Identity hashing**: `HMAC-SHA256(email.lower(), VAULT_SALT)` produces a 32-char hex `user_hash`. This is irreversible without the salt.
+- **PII encryption**: All PII (email, Slack ID) is encrypted with **Fernet** (AES-128-CBC + HMAC-SHA256) using the `ENCRYPTION_KEY`. Stored in `identity.users.email_encrypted` as `LargeBinary`.
+- **Two-Vault separation**: The `analytics` schema never holds plaintext email or Slack ID. The engines operate purely on hashes. The `identity` schema is accessed only for nudge delivery and RBAC lookups, and every access is logged in `audit_logs`.
+
+### Security Middleware
+
+The following middleware layers are applied to every request:
+
+- `SecurityMiddleware` — OWASP security headers, basic input sanitization
+- `RateLimitMiddleware` — token-bucket algorithm, per-IP
+- `TenantContextMiddleware` — populates `request.state.tenant_id`
+- `RequestIDMiddleware` — attaches `X-Request-ID` for distributed tracing
+- HTTP middleware in `main.py` — `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Content-Security-Policy`, and HSTS (production only)
+
+### SSO
+
+SSO providers are registered at startup from environment variables. Three providers are supported:
+
+- **Google OAuth 2.0** — optional domain allow-list
+- **Azure AD** — single tenant or multi-tenant (use `AZURE_TENANT_ID=common`)
+- **SAML 2.0** — bring your own IdP metadata
+
+---
+
+## Environment Variables
+
+See the [root README](../README.md#environment-variables-reference) for the full variable reference.
+
+The minimum required set to run the backend is:
 
 ```env
-# Database - Use connection pooling
-DATABASE_URL=postgresql://user:pass@prod-db:5432/sentinel?sslmode=require
-
-# Security - Use strong, unique keys
-VAULT_SALT=prod-random-salt-32-chars-min
-ENCRYPTION_KEY=prod-fernet-key-32-bytes
-
-# LLM - Production API keys
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4
-LLM_API_KEY=sk-prod-key
-
-# Application - Production settings
-SIMULATION_MODE=false
-DATA_RETENTION_DAYS=365
+DATABASE_URL=postgresql://user:password@localhost:5432/sentinel
+JWT_SECRET=<at least 32 random characters>
+VAULT_SALT=<any random string>
+ENCRYPTION_KEY=<Fernet base64 key>
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=<anon key>
+SUPABASE_SERVICE_KEY=<service role key>
 ```
 
-### Cloud Deployment
+---
 
-#### Railway/Render
-1. Connect your GitHub repository
-2. Set environment variables in dashboard
-3. Deploy automatically on push
+## Running the Application
 
-#### AWS ECS/Fargate
+### Development
+
 ```bash
-# Build and push to ECR
-docker build -t sentinel-backend .
-docker tag sentinel-backend:latest $ECR_REPO:latest
-docker push $ECR_REPO:latest
+# Navigate to backend directory
+cd backend
 
-# Deploy to ECS
-aws ecs update-service --cluster sentinel --service backend --force-new-deployment
+# Activate virtual environment
+source .venv/bin/activate   # macOS / Linux
+.venv\Scripts\activate      # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start with hot-reload
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-#### Kubernetes
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sentinel-backend
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: sentinel-backend
-  template:
-    metadata:
-      labels:
-        app: sentinel-backend
-    spec:
-      containers:
-      - name: backend
-        image: sentinel-backend:latest
-        ports:
-        - containerPort: 8000
-        envFrom:
-        - secretRef:
-            name: sentinel-secrets
+Endpoints:
+- API: `http://localhost:8000`
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+- Health: `http://localhost:8000/health`
+- Readiness: `http://localhost:8000/ready`
+
+### Production
+
+```bash
+gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+```
+
+### Database Migrations
+
+Tables are created automatically on startup via `Base.metadata.create_all(engine)`. For production schema changes, use Alembic:
+
+```bash
+# Run all pending migrations
+alembic upgrade head
+
+# Create a new migration after model changes
+alembic revision --autogenerate -m "describe the change"
 ```
 
 ---
 
-## Security & Privacy
+## Running Tests
 
-### Cryptographic Flow
+```bash
+cd backend
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Email     │────▶│  SHA-256     │────▶│   user_hash     │
-│  (PII)      │     │   + Salt     │     │   (Vault A ID)  │
-└─────────────┘     └──────────────┘     └─────────────────┘
-                                                │
-                                                │
-                           ┌────────────────────┘
-                           ▼
-                    ┌─────────────┐
-                    │  Fernet     │
-                    │ Encryption  │
-                    └─────────────┘
-                           │
-                           ▼
-                    ┌─────────────┐
-                    │  Encrypted  │
-                    │   Email     │
-                    │ (Vault B)   │
-                    └─────────────┘
+# Run the full test suite
+pytest
+
+# Run with coverage report
+pytest --cov=app --cov-report=html
+
+# Run a specific file
+pytest tests/test_safety_valve.py -v
+
+# Run tests matching a keyword
+pytest -k "auth" -v
 ```
 
-### Privacy Guarantees
-
-1. **Zero-Knowledge Analytics**: Vault A never contains PII
-2. **Irreversible Hashing**: SHA-256 with salt prevents rainbow table attacks
-3. **Encryption at Rest**: All PII encrypted with Fernet (AES-128-CBC + HMAC)
-4. **Audit Trail**: Every identity access logged immutably
-5. **Right to be Forgotten**: Complete data deletion capability
-
-### Security Best Practices
-
-- Rotate `ENCRYPTION_KEY` annually
-- Use unique `VAULT_SALT` per deployment
-- Enable SSL/TLS for all connections
-- Store secrets in environment variables or secret managers
-- Regular security audits of access patterns
-
 ---
 
-## 📄 License
+## Key Modules Explained
 
-This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
+### `app/services/safety_valve.py`
 
----
+The Safety Valve engine detects burnout by analyzing behavioral velocity, circadian disruption, and social isolation. It reads from `analytics.events`, writes to `analytics.risk_scores` and `analytics.risk_history`, and publishes risk updates over WebSocket. The `seed_risk_history` method populates 30 days of synthetic historical data for demo personas.
 
-## 🤝 Contributing
+### `app/services/talent_scout.py`
 
-Contributions are welcome! Please read our [Contributing Guide](../CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+Builds a directed interaction graph using NetworkX from `analytics.graph_edges`. Computes betweenness centrality (bridge-building) and eigenvector centrality (connected to important people). Writes results to `analytics.centrality_scores`. High betweenness + low traditional visibility = "hidden gem."
 
----
+### `app/services/culture_temp.py`
 
-## 📞 Support
+Aggregates individual risk scores across a team to assess collective health. Calculates graph fragmentation, communication decay rate, and uses the SIR epidemic model (`sir_model.py`) to forecast how burnout risk might spread through the network.
 
-- **Documentation**: [Full Documentation](../docs/)
-- **Issues**: [GitHub Issues](https://github.com/your-org/sentinel/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/sentinel/discussions)
+### `app/services/llm.py`
 
----
+Wraps LiteLLM to provide a provider-agnostic interface. Supports synchronous (`generate_insight`) and streaming (`generate_chat_response_stream`) response modes. Configured via `LLM_PROVIDER`, `LLM_MODEL`, and the corresponding API key.
 
-<p align="center">
-  Built with ❤️ by the Sentinel Team
-</p>
+### `app/integrations/composio_client.py`
+
+The Composio tool router client. Provides typed async methods for:
+- `get_calendar_events` — fetches events via `GOOGLECALENDAR_LIST_EVENTS`
+- `analyze_meeting_load` — detects high meeting density and back-to-back patterns
+- `get_slack_activity` — message volume analysis via `SLACK_SEARCH_MESSAGES`
+- `execute_tool` — generic action dispatcher for calendar, slack, and github
+
+Only active when `COMPOSIO_API_KEY` is set.
+
+### `app/core/redis_client.py`
+
+Async Redis client wrapper using `redis.asyncio`. Provides `get`, `set` (with `nx` for atomic set-if-not-exists), `setex`, `delete`, `ttl`, and `ping`. Used for MCP session caching and distributed locking. A module-level singleton is exposed via `get_redis_client()`.
+
+### `app/models/workflow.py`
+
+Three SQLAlchemy models supporting the workflow automation feature: `UserIntegration` (per-user OAuth connections), `WorkflowTemplate` (pre-built and custom templates with required integrations and a prompt template), and `WorkflowExecution` (full execution audit trail including LLM turn history, tool usage, and timing breakdowns).
+
+### `app/services/simulation.py`
+
+The digital twin generator. `RealTimeSimulator` creates synthetic `Event` records with realistic patterns (late nights, weekend work, social isolation, etc.) that exercise all three engines. Used for demos and testing without real employee data.
+
+### `app/middleware/tenant_context.py`
+
+Extracts `tenant_id` from the JWT claims or the `X-Tenant-ID` request header and stores it in `request.state.tenant_id`. All subsequent queries scope to this tenant automatically.

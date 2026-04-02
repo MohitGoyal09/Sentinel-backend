@@ -89,7 +89,6 @@ class QueryRequest(BaseModel):
     """Request for semantic query over employee data"""
 
     query: str = Field(..., description="Natural language query")
-    user_role: str = Field("admin", description="Role context for the query")
 
 
 class QueryResult(BaseModel):

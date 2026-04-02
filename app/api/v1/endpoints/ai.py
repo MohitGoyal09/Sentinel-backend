@@ -1,5 +1,6 @@
 import json
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -9,8 +10,9 @@ from typing import Optional, List, Dict, Any
 from app.core.database import get_db
 from app.models.analytics import RiskScore, Event, RiskHistory, CentralityScore
 from app.models.identity import UserIdentity
-from app.api.deps.auth import get_current_user_identity
+from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.llm import llm_service
+from app.services.sentinel_chat import sentinel_chat_service
 from app.services.permission_service import PermissionService
 from app.schemas.ai import (
     ChatRequest,
@@ -27,6 +29,8 @@ from app.schemas.ai import (
     TeamReportResponse,
 )
 
+logger = logging.getLogger("sentinel.api.ai")
+
 router = APIRouter()
 
 
@@ -35,7 +39,7 @@ router = APIRouter()
 async def get_team_narrative_alias(
     team_hash: str,
     days: int = 30,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -704,14 +708,25 @@ async def generate_risk_report(
 
     Applies privacy filters automatically.
     """
+    # Permission check
+    if current_user.role == "employee":
+        if current_user.user_hash != user_hash:
+            raise HTTPException(status_code=403, detail="Employees can only view their own risk report")
+    elif current_user.role == "manager":
+        target = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+        if target and current_user.user_hash != user_hash and target.manager_hash != current_user.user_hash:
+            raise HTTPException(status_code=403, detail="Managers can only view risk reports for their team")
+    # admin: can view anyone
+
     try:
         data = get_risk_narrative_data(db, user_hash, time_range)
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Error fetching risk data for %s: %s", user_hash, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error fetching risk data: {str(e)}",
+            detail="Unable to process request. Please try again.",
         )
 
     prompt = build_risk_narrative_prompt(data, time_range)
@@ -763,7 +778,7 @@ async def generate_risk_report(
 async def generate_team_report(
     team_hash: str,
     days: int = 30,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -781,9 +796,10 @@ async def generate_team_report(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Error fetching team data for %s: %s", team_hash, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error fetching team data: {str(e)}",
+            detail="Unable to process request. Please try again.",
         )
 
     prompt = build_team_narrative_prompt(data, days)
@@ -846,7 +862,7 @@ async def generate_team_report(
 @router.post("/copilot/agenda", response_model=AgendaResponse)
 async def generate_agenda(
     request: AgendaRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -947,7 +963,7 @@ async def semantic_query(
     Applies role-based privacy filters automatically.
     """
     query = request.query
-    user_role = request.user_role or current_user.role
+    user_role = current_user.role
 
     intent = parse_query_intent(query)
 
@@ -1195,77 +1211,57 @@ async def chat(
     db: Session = Depends(get_db),
 ):
     """
-    Role-aware AI chat endpoint.
-
-    Provides personalized responses based on user role:
-    - Employee: Focus on personal wellbeing, growth, 1:1 prep
-    - Manager: Focus on team insights, risk analysis
-    - Admin: Focus on organization analytics
-
-    Includes user's actual data context (risk level, etc.) in responses.
+    Role-aware AI chat endpoint (Ask Sentinel).
+    Delegates to SentinelChatService for context gathering and LLM response.
     """
     try:
-        # Get user's role and context
-        user_role = current_user.role or "employee"
-        user_context = get_user_context_data(db, current_user.user_hash)
-
-        # Merge request context with user context
-        if request.context:
-            user_context.update(request.context)
-
-        # Build role-aware prompt with system message and context
-        system_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS["employee"])
-        context_str = format_context_for_role(user_context, user_role)
-        suggestion_instruction = (
-            "\n\nIMPORTANT: At the very end of your response, on a new line, include exactly 3 brief "
-            "follow-up questions the user might want to ask next. Format them as:\n"
-            "<suggestions>\n- First suggestion\n- Second suggestion\n- Third suggestion\n</suggestions>\n"
-            "Do NOT mention these suggestions in your main response. Keep each suggestion under 60 characters."
-        )
-        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}{suggestion_instruction}"
-
-        # Build message list for multi-turn conversation
-        messages = [{"role": "system", "content": full_system}]
-
-        # Include conversation history if provided via context
-        history = (request.context or {}).get("conversation_history", [])
-        if isinstance(history, list):
-            for msg in history[-10:]:  # Last 10 messages for context window safety
-                if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                    messages.append({"role": msg["role"], "content": msg["content"]})
-
-        messages.append({"role": "user", "content": request.message})
-
-        # Generate response using LLM with conversation support
-        llm_response = llm_service.generate_chat_response(messages)
-
-        # Generate conversation ID if not provided (for tracking)
-        conversation_id = (
-            request.conversation_id
-            or f"chat_{current_user.user_hash}_{datetime.utcnow().timestamp()}"
-        )
-
-        return ChatResponse(
-            response=llm_response,
-            role=user_role,
-            conversation_id=conversation_id,
-            context_used=ChatContextUsed(
-                risk_level=user_context.get("risk_level"),
-                velocity=user_context.get("velocity"),
-                belongingness=user_context.get("belongingness"),
-                team_size=user_context.get("team_size"),
-                org_total_users=user_context.get("org_total_users"),
-            ),
-            generated_at=datetime.utcnow().isoformat(),
-        )
-
+        return await sentinel_chat_service.respond(request, current_user, db)
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Error processing chat request for %s: %s", current_user.user_hash, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing chat request: {str(e)}",
+            detail="Unable to process request. Please try again.",
         )
+
+
+@router.post("/feedback")
+async def submit_chat_feedback(
+    body: dict,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+):
+    """
+    Record user feedback on an AI response.
+
+    Expected body fields:
+    - conversation_id (str): Identifier of the conversation thread.
+    - message_index (int): Zero-based index of the message being rated.
+    - rating (str): "positive" or "negative".
+
+    Feedback is logged for offline analysis.  Returns immediately with a
+    confirmation so the UI can update optimistically.
+    """
+    conversation_id = body.get("conversation_id", "")
+    message_index = body.get("message_index")
+    rating = body.get("rating", "")
+
+    if rating not in ("positive", "negative"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="rating must be 'positive' or 'negative'",
+        )
+
+    logger.info(
+        "chat_feedback received: conversation_id=%s message_index=%s "
+        "rating=%s user=%s",
+        conversation_id,
+        message_index,
+        rating,
+        current_user.user_hash,
+    )
+
+    return {"status": "ok", "message": "Feedback recorded"}
 
 
 @router.post("/chat/stream")
@@ -1275,65 +1271,11 @@ async def chat_stream(
     db: Session = Depends(get_db),
 ):
     """
-    Streaming version of the chat endpoint.
-    Returns Server-Sent Events with token-by-token response.
+    Streaming version of Ask Sentinel. Returns Server-Sent Events.
     """
     try:
-        user_role = current_user.role or "employee"
-        user_context = get_user_context_data(db, current_user.user_hash)
-
-        if request.context:
-            user_context.update(request.context)
-
-        system_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS["employee"])
-        context_str = format_context_for_role(user_context, user_role)
-        suggestion_instruction = (
-            "\n\nIMPORTANT: At the very end of your response, on a new line, include exactly 3 brief "
-            "follow-up questions the user might want to ask next. Format them as:\n"
-            "<suggestions>\n- First suggestion\n- Second suggestion\n- Third suggestion\n</suggestions>\n"
-            "Do NOT mention these suggestions in your main response. Keep each suggestion under 60 characters."
-        )
-        full_system = f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}{suggestion_instruction}"
-
-        messages = [{"role": "system", "content": full_system}]
-
-        history = (request.context or {}).get("conversation_history", [])
-        if isinstance(history, list):
-            for msg in history[-10:]:
-                if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                    messages.append({"role": msg["role"], "content": msg["content"]})
-
-        messages.append({"role": "user", "content": request.message})
-
-        conversation_id = (
-            request.conversation_id
-            or f"chat_{current_user.user_hash}_{datetime.utcnow().timestamp()}"
-        )
-
-        async def event_generator():
-            for chunk in llm_service.generate_chat_response_stream(messages):
-                event_data = json.dumps({"type": "token", "content": chunk})
-                yield f"data: {event_data}\n\n"
-                await asyncio.sleep(0)
-
-            # Send final metadata event
-            metadata = {
-                "type": "done",
-                "role": user_role,
-                "conversation_id": conversation_id,
-                "context_used": {
-                    "risk_level": user_context.get("risk_level"),
-                    "velocity": user_context.get("velocity"),
-                    "belongingness": user_context.get("belongingness"),
-                    "team_size": user_context.get("team_size"),
-                    "org_total_users": user_context.get("org_total_users"),
-                },
-                "generated_at": datetime.utcnow().isoformat(),
-            }
-            yield f"data: {json.dumps(metadata)}\n\n"
-
         return StreamingResponse(
-            event_generator(),
+            sentinel_chat_service.respond_stream(request, current_user, db),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1341,11 +1283,11 @@ async def chat_stream(
                 "X-Accel-Buffering": "no",
             },
         )
-
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Error processing streaming chat request for %s: %s", current_user.user_hash, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing streaming chat request: {str(e)}",
+            detail="Unable to process request. Please try again.",
         )

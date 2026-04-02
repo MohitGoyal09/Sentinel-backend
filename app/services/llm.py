@@ -1,7 +1,8 @@
+import json
 import logging
 import time
 from typing import Generator
-from litellm import completion
+from portkey_ai import Portkey
 from app.config import get_settings
 
 logger = logging.getLogger("sentinel.llm")
@@ -10,110 +11,82 @@ settings = get_settings()
 
 
 class LLMService:
-    """Unified LLM Interface via LiteLLM with fallback and retry"""
-
-    FALLBACK_MODELS = ["gemini/gemini-2.0-flash", "gemini/gemini-1.5-flash"]
+    """Unified LLM Interface via Portkey AI Gateway with native fallback"""
 
     def __init__(self):
-        self.provider = settings.llm_provider
-        self.model = settings.llm_model
+        self._client = Portkey(api_key=settings.portkey_api_key)
+        self._fallback_config = json.dumps(self._build_fallback_config())
         self._cache: dict[str, tuple[str, float]] = {}
         self._cache_ttl = 300  # 5 min cache
 
-    def _get_model_string(self, model: str | None = None) -> str:
-        m = model or self.model
-        return f"{self.provider}/{m}" if "/" not in m else m
+    def _build_fallback_config(self) -> dict:
+        targets: list[dict] = [
+            {
+                "virtual_key": settings.portkey_virtual_key,
+                "override_params": {"model": settings.llm_model},
+            }
+        ]
+        if settings.portkey_fallback_virtual_key:
+            targets.append(
+                {
+                    "virtual_key": settings.portkey_fallback_virtual_key,
+                    "override_params": {"model": settings.llm_fallback_model},
+                }
+            )
+        return {
+            "strategy": {"mode": "fallback"},
+            "retry": {"attempts": 2},
+            "targets": targets,
+        }
 
-    def _call_llm(self, messages: list, model: str | None = None) -> str:
-        response = completion(
-            model=self._get_model_string(model),
-            messages=messages,
-            api_key=settings.llm_api_key if settings.llm_api_key else None,
-            timeout=30,
+    def _call(self, messages: list, stream: bool = False):
+        return (
+            self._client
+            .with_options(config=self._fallback_config)
+            .chat.completions.create(messages=messages, stream=stream)
         )
-        return response.choices[0].message.content
 
     def generate_insight(self, context: str, system_prompt: str | None = None) -> str:
-        """Generate qualitative insight with retry and model fallback"""
-        # Check cache
+        """Generate qualitative insight with caching. Portkey handles retries/fallback."""
         cache_key = hash(context[:200])
         if cache_key in self._cache:
             cached, ts = self._cache[cache_key]
             if time.time() - ts < self._cache_ttl:
                 return cached
 
-        messages = []
+        messages: list[dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": context})
 
-        # Try primary model with 1 retry
-        for attempt in range(2):
-            try:
-                result = self._call_llm(messages)
-                self._cache[cache_key] = (result, time.time())
-                return result
-            except Exception as e:
-                logger.warning("LLM attempt %d failed (%s): %s", attempt + 1, self._get_model_string(), e)
-                if attempt == 0:
-                    time.sleep(1)
-
-        # Try fallback models
-        for fallback in self.FALLBACK_MODELS:
-            try:
-                logger.info("Trying fallback model: %s", fallback)
-                result = self._call_llm(messages, model=fallback)
-                self._cache[cache_key] = (result, time.time())
-                return result
-            except Exception as e:
-                logger.warning("Fallback %s failed: %s", fallback, e)
-
-        logger.error("All LLM models exhausted")
-        return "Analysis complete (LLM insight temporarily unavailable)."
+        try:
+            response = self._call(messages)
+            result = response.choices[0].message.content
+            self._cache[cache_key] = (result, time.time())
+            return result
+        except Exception as e:
+            logger.error("LLM insight generation failed: %s", e)
+            return "Analysis complete (LLM insight temporarily unavailable)."
 
     def generate_chat_response(self, messages: list) -> str:
-        """Generate a chat response from a full message list (with conversation history)"""
-        for attempt in range(2):
-            try:
-                return self._call_llm(messages)
-            except Exception as e:
-                logger.warning("Chat LLM attempt %d failed: %s", attempt + 1, e)
-                if attempt == 0:
-                    time.sleep(1)
+        """Generate a chat response. Portkey handles retries/fallback."""
+        try:
+            response = self._call(messages)
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error("LLM chat generation failed: %s", e)
+            return "I'm sorry, I'm having trouble connecting to my language model right now. Please try again in a moment."
 
-        for fallback in self.FALLBACK_MODELS:
-            try:
-                return self._call_llm(messages, model=fallback)
-            except Exception as e:
-                logger.warning("Chat fallback %s failed: %s", fallback, e)
-
-        return "I'm sorry, I'm having trouble connecting to my language model right now. Please try again in a moment."
-
-    def generate_chat_response_stream(self, messages: list, model: str | None = None) -> Generator[str, None, None]:
+    def generate_chat_response_stream(self, messages: list) -> Generator[str, None, None]:
         """Generate a streaming chat response. Yields content chunks as strings."""
         try:
-            response = completion(
-                model=self._get_model_string(model),
-                messages=messages,
-                api_key=settings.llm_api_key if settings.llm_api_key else None,
-                timeout=30,
-                stream=True,
-            )
+            response = self._call(messages, stream=True)
             for chunk in response:
                 content = chunk.choices[0].delta.content
                 if content:
                     yield content
         except Exception as e:
-            logger.warning("Streaming LLM failed (%s): %s", self._get_model_string(model), e)
-            # Fallback: try non-streaming with fallback models
-            for fallback in self.FALLBACK_MODELS:
-                try:
-                    logger.info("Streaming fallback to non-stream: %s", fallback)
-                    result = self._call_llm(messages, model=fallback)
-                    yield result
-                    return
-                except Exception as fe:
-                    logger.warning("Streaming fallback %s failed: %s", fallback, fe)
+            logger.error("LLM streaming failed: %s", e)
             yield "I'm sorry, I'm having trouble connecting right now. Please try again."
 
 

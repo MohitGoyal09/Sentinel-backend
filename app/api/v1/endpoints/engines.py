@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -33,20 +33,7 @@ from app.models.identity import UserIdentity
 from app.core.security import privacy
 from app.services.permission_service import PermissionService, PermissionDenied
 
-# Auth dependencies - import conditionally to avoid breaking if Supabase not configured
-try:
-    from app.api.deps import get_current_user
-    from app.api.deps import get_optional_user as get_current_user_identity
-
-    AUTH_ENABLED = True
-except Exception:
-    AUTH_ENABLED = False
-
-    async def get_current_user():
-        return {"id": "demo", "email": "demo@algoquest.ai"}
-
-    async def get_current_user_identity():
-        return None
+from app.api.deps.auth import get_current_user, get_current_user_identity, require_role
 
 
 router = APIRouter()
@@ -63,11 +50,21 @@ def check_user_data_access(
     Raises HTTPException 403 if access is denied.
     """
     if not current_user:
-        # Demo mode - allow access
-        return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     if target_user_hash == "global":
-        # Allow global access for team views (handled by engine logic)
+        from app.models.tenant import TenantMember
+        member = db.query(TenantMember).filter(
+            TenantMember.user_hash == current_user.user_hash
+        ).first()
+        if not member or member.role not in ("admin", "manager"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions for global access",
+            )
         return
 
     perm_service = PermissionService(db)
@@ -99,9 +96,12 @@ def check_user_data_access(
 
 # Background task wrapper
 def run_all_engines(user_hash: str):
-    with SessionLocal() as db:
-        SafetyValve(db).analyze(user_hash)
-        TalentScout(db).analyze_network()
+    try:
+        with SessionLocal() as db:
+            SafetyValve(db).analyze(user_hash)
+            TalentScout(db).analyze_network()
+    except Exception:
+        logger.exception("Background engine analysis failed for user_hash=%s", user_hash)
 
 
 # ============ SIMULATION / PERSONAS ============
@@ -114,6 +114,7 @@ def create_persona(
     request: CreatePersonaRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: UserIdentity = Depends(require_role("admin")),
 ):
     """Create a persona with 30 days of synthetic behavioral data"""
     sim = RealTimeSimulator(db)
@@ -231,6 +232,22 @@ def analyze_team_culture(
 
     team_hashes = request.team_hashes
 
+    if team_hashes:
+        if current_user.role == "employee":
+            allowed = {current_user.user_hash}
+            if not set(team_hashes).issubset(allowed):
+                raise HTTPException(status_code=403, detail="Employees can only view their own data")
+        elif current_user.role == "manager":
+            team = set(
+                m.user_hash
+                for m in db.query(UserIdentity.user_hash)
+                .filter(UserIdentity.manager_hash == current_user.user_hash)
+                .all()
+            )
+            team.add(current_user.user_hash)
+            if not set(team_hashes).issubset(team):
+                raise HTTPException(status_code=403, detail="Managers can only view their team members")
+
     if not team_hashes:
         # Analyze current user's team based on role
         if current_user and current_user.role == "manager":
@@ -269,6 +286,22 @@ def get_team_forecast(
 
     team_hashes = request.team_hashes
     days = request.days
+
+    if team_hashes:
+        if current_user.role == "employee":
+            allowed = {current_user.user_hash}
+            if not set(team_hashes).issubset(allowed):
+                raise HTTPException(status_code=403, detail="Employees can only view their own data")
+        elif current_user.role == "manager":
+            team = set(
+                m.user_hash
+                for m in db.query(UserIdentity.user_hash)
+                .filter(UserIdentity.manager_hash == current_user.user_hash)
+                .all()
+            )
+            team.add(current_user.user_hash)
+            if not set(team_hashes).issubset(team):
+                raise HTTPException(status_code=403, detail="Managers can only view their team members")
 
     if not team_hashes:
         # Analyze current user's team based on role
@@ -340,10 +373,12 @@ def get_nudge(
         from app.core.security import privacy
 
         try:
+            import re
             email = privacy.decrypt(user_identity.email_encrypted)
             user_name = email.split("@")[0].replace(".", " ").title()
+            user_name = re.sub(r'["\n\r{}\\]', '', user_name)[:50]
         except Exception:
-            pass
+            logger.warning("Failed to decrypt email for user_hash=%s; using fallback name", user_hash)
 
     # Build context for LLM
     indicator_list = []
@@ -432,6 +467,9 @@ def dismiss_nudge(
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
     """Dismiss an active nudge for a user"""
+    # RBAC Check: Verify user has permission to access this data
+    check_user_data_access(db, current_user, user_hash)
+
     from app.models.identity import AuditLog
     from datetime import datetime
 
@@ -456,6 +494,9 @@ def schedule_break(
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
     """Schedule a break for a user (logs the action)"""
+    # RBAC Check: Verify user has permission to access this data
+    check_user_data_access(db, current_user, user_hash)
+
     from app.models.identity import AuditLog
     from datetime import datetime, timedelta
 
@@ -482,14 +523,31 @@ def schedule_break(
 
 @router.get("/events", response_model=ActivityEventResponse)
 def list_events(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = 0,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
-    """Get recent activity stream"""
+    """Get recent activity stream (role-filtered)"""
+    query = db.query(Event)
+
+    # Role-based filtering
+    if current_user.role == "employee":
+        query = query.filter(Event.user_hash == current_user.user_hash)
+    elif current_user.role == "manager":
+        from app.models.identity import UserIdentity as UI
+        team_hashes = set(
+            m.user_hash
+            for m in db.query(UI.user_hash)
+            .filter(UI.manager_hash == current_user.user_hash)
+            .all()
+        )
+        team_hashes.add(current_user.user_hash)
+        query = query.filter(Event.user_hash.in_(team_hashes))
+    # admin: no filter, sees all events
+
     events = (
-        db.query(Event)
+        query
         .order_by(Event.timestamp.desc())
         .offset(offset)
         .limit(limit)
@@ -589,11 +647,6 @@ def list_users(
             except Exception:
                 pass
 
-        if "Alex" in name:
-            role = "Senior Engineer"
-        if "Sarah" in name:
-            role = "Tech Lead"
-
         result.append(
             {
                 "user_hash": user_hash,
@@ -615,7 +668,7 @@ def list_users(
 @router.get("/users/{user_hash}/history", response_model=RiskHistoryResponse)
 def get_risk_history(
     user_hash: str,
-    days: int = 30,
+    days: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
 ):
@@ -659,18 +712,18 @@ def inject_event(
     request: InjectEventRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("admin")),
 ):
-    """Inject a real-time event for demo purposes"""
+    """Inject a real-time event for demo purposes (admin only)"""
     sim = RealTimeSimulator(db)
     vault = VaultManager(db, db)
 
     # Ensure user exists in our system
     try:
-        user_hash = vault.store_identity(request.user_email)
+        user_hash = vault.store_identity(request.user_hash)
     except Exception:
-        # Fallback for demo users
-        user_hash = f"demo_{request.user_email.split('@')[0]}"
+        # Fallback: use the provided user_hash directly
+        user_hash = request.user_hash
 
     # Generate a realistic event using the simulation engine
     from app.models.analytics import RiskScore
@@ -701,7 +754,7 @@ def inject_event(
         data={
             "event_id": event.id,
             "user_hash": user_hash,
-            "event_type": request.event_type,
+            "event_type": event.event_type,
         },
     )
 
@@ -709,7 +762,7 @@ def inject_event(
 @router.get("/network/global/talent")
 def get_global_talent(
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("manager", "admin")),
 ):
     """Get global talent network analysis"""
     engine = TalentScout(db)
@@ -719,7 +772,7 @@ def get_global_talent(
 @router.get("/global/network")
 def get_global_network(
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("manager", "admin")),
 ):
     """Get global network metrics"""
     engine = TalentScout(db)
@@ -734,7 +787,7 @@ def seed_user_history(
     user_hash: str,
     persona_type: str = "alex_burnout",
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(require_role("admin")),
 ):
     """Seed 30 days of historical risk data for an existing user (admin/demo use)"""
     from app.models.analytics import RiskHistory

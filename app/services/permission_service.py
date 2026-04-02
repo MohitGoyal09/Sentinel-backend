@@ -205,21 +205,20 @@ class PermissionService:
         This is the security camera footage—if someone accesses data,
         we know who, when, and why.
         """
+        accessor_identity = self.get_user_identity(accessor_hash)
         audit_entry = AuditLog(
             user_hash=target_hash,  # The person whose data was accessed
             action=f"data_access:{action}",
             details={
                 "accessor_hash": accessor_hash,
-                "accessor_role": self.get_user_identity(accessor_hash).role
-                if self.get_user_identity(accessor_hash)
-                else "unknown",
+                "accessor_role": accessor_identity.role if accessor_identity else "unknown",
                 "target_hash": target_hash,
                 "timestamp": datetime.utcnow().isoformat(),
                 **(details or {}),
             },
         )
         self.db.add(audit_entry)
-        self.db.commit()
+        self.db.flush()
 
     def get_user_team_members(self, manager_hash: str) -> List[UserIdentity]:
         """Get all employees who report to this manager"""

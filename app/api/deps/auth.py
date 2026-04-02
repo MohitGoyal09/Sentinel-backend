@@ -9,12 +9,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.core.supabase import get_supabase_client
 from app.core.database import get_db
-from app.models.identity import UserIdentity
+from app.models.identity import UserIdentity, AuditLog
 from app.core.security import privacy
 from app.services.permission_service import PermissionService, UserRole
 
 security = HTTPBearer()
 security_optional = HTTPBearer(auto_error=False)
+
 
 async def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
@@ -26,7 +27,7 @@ async def get_optional_user(
     """
     if not credentials:
         return None
-    
+
     try:
         token = credentials.credentials
         supabase = get_supabase_client()
@@ -37,13 +38,12 @@ async def get_optional_user(
 
         # Get user hash from email
         user_hash = privacy.hash_identity(response.user.email)
-        
+
         # Fetch full identity
         user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
         return user
     except Exception:
-        return None 
-
+        return None
 
 
 async def get_current_user(
@@ -79,7 +79,7 @@ async def get_current_user(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {str(e)}",
+            detail="Authentication failed",
         )
 
 
@@ -89,7 +89,7 @@ def get_current_user_identity(
 ) -> UserIdentity:
     """
     Get the current user's identity from the database (Vault B).
-    This includes their RBAC role and permissions.
+    Includes audit logging for auth events.
     """
     token = credentials.credentials
 
@@ -110,25 +110,35 @@ def get_current_user_identity(
         user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
 
         if not user:
-            # User exists in Supabase but not in our database yet
-            # Create identity record
+            # Auto-create identity for new SSO/OAuth users, always defaulting to employee
             user = UserIdentity(
                 user_hash=user_hash,
                 email_encrypted=privacy.encrypt(response.user.email),
-                role=UserRole.EMPLOYEE.value,  # Default role
+                role=UserRole.EMPLOYEE.value,
             )
             db.add(user)
             db.commit()
             db.refresh(user)
-
+            # Log the auto-creation
+            audit = AuditLog(
+                user_hash=user_hash,
+                action="auth:auto_identity_created",
+                details={
+                    "email_domain": response.user.email.split("@")[1]
+                    if "@" in response.user.email
+                    else "unknown",
+                    "auto_role": UserRole.EMPLOYEE.value,
+                },
+            )
+            db.add(audit)
+            db.commit()
         return user
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {str(e)}",
+            detail="Authentication failed",
         )
 
 

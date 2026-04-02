@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
 
 
@@ -11,15 +11,17 @@ class CreatePersonaRequest(BaseModel):
 class InjectEventRequest(BaseModel):
     user_hash: str
     current_risk: str
+    event_type: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class AnalyzeTeamRequest(BaseModel):
-    team_hashes: List[str]
+    team_hashes: List[str] = Field(max_length=500)
 
 
 class ForecastRequest(BaseModel):
-    team_hashes: List[str]
-    days: int = 30
+    team_hashes: List[str] = Field(max_length=500)
+    days: int = Field(default=30, ge=1, le=365)
 
 
 # Response Models (API Envelope Pattern)

@@ -1,7 +1,10 @@
 import hashlib
 import hmac
+import logging
 from cryptography.fernet import Fernet
 from app.config import get_settings
+
+logger = logging.getLogger("sentinel.security")
 
 settings = get_settings()
 
@@ -30,16 +33,15 @@ class PrivacyEngine:
         try:
             self.cipher = Fernet(self.key)
         except Exception as e:
-            # Last resort fallback if key logic fails
-            print(f"Encryption Key Error: {e}. Generating temporary key.")
-            self.key = Fernet.generate_key()
-            self.cipher = Fernet(self.key)
+            raise RuntimeError(
+                f"Failed to initialise encryption cipher. Check ENCRYPTION_KEY environment variable."
+            ) from e
 
         self.salt = settings.vault_salt.encode()
 
     def hash_identity(self, email: str) -> str:
         return hmac.new(self.salt, email.lower().encode(), hashlib.sha256).hexdigest()[
-            :16
+            :32
         ]
 
     def encrypt(self, text: str) -> bytes:
