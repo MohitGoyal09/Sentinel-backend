@@ -19,8 +19,9 @@ from app.api.v1.endpoints import (
     tools,
 )
 from app.api.v1.endpoints.workflows import router as workflows_router
-from app.api.v1.endpoints.identity_reveal import router as identity_reveal_router
+from app.api.v1.endpoints.admin_teams import router as admin_teams_router
 from app.api.v1.endpoints.admin_promote import router as admin_promote_router
+from app.api.v1.endpoints.identity_reveal import router as identity_reveal_router
 
 api_router = APIRouter()
 api_router.include_router(engines.router, prefix="/engines", tags=["Engines"])
@@ -45,8 +46,6 @@ api_router.include_router(demo.router, prefix="/demo", tags=["Demo"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 api_router.include_router(tools.router, prefix="/tools", tags=["External Tools"])
 api_router.include_router(workflows_router)
-api_router.include_router(identity_reveal_router)
-api_router.include_router(admin_promote_router)
-
-from app.api.v1.endpoints.admin_teams import router as admin_teams_router
 api_router.include_router(admin_teams_router)
+api_router.include_router(admin_promote_router)
+api_router.include_router(identity_reveal_router)

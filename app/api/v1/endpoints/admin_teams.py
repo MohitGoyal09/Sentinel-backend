@@ -130,7 +130,7 @@ def get_team(
 
     members = (
         db.query(TenantMember)
-        .filter(TenantMember.team_id == team_id)
+        .filter(TenantMember.team_id == team_id, TenantMember.tenant_id == tenant_id)
         .all()
     )
 

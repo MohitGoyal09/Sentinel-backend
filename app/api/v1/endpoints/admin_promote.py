@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_role
 from app.core.database import get_db
+from app.models.team import Team
 from app.models.tenant import TenantMember
 from app.services.permission_service import PermissionService
 
@@ -135,11 +136,21 @@ def promote_demote_member(
     target.role = body.new_role
 
     if body.new_role == "manager" and body.new_team_id:
-        target.team_id = UUID(body.new_team_id)
+        # Validate team exists in this tenant (prevent IDOR)
+        team_uuid = UUID(body.new_team_id)
+        team = (
+            db.query(Team)
+            .filter(Team.id == team_uuid, Team.tenant_id == caller.tenant_id)
+            .first()
+        )
+        if team is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Team not found in this tenant",
+            )
+        target.team_id = team_uuid
     elif body.new_role == "employee":
         target.team_id = None
-
-    db.flush()
 
     # Audit log
     PermissionService.log_data_access(
@@ -156,6 +167,8 @@ def promote_demote_member(
             "team_id": body.new_team_id,
         },
     )
+
+    db.commit()
 
     return {
         "user_hash": target.user_hash,

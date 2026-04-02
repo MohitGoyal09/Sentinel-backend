@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.supabase import get_supabase_client
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
+from app.models.tenant import TenantMember
 from app.core.security import privacy
 from app.services.permission_service import PermissionService, UserRole
 
@@ -149,27 +150,52 @@ def get_permission_service(db: Session = Depends(get_db)) -> PermissionService:
     return PermissionService(db)
 
 
+def get_tenant_member(
+    user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+) -> TenantMember:
+    """Get the current user's TenantMember record for their active tenant."""
+    if not user.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not associated with any organization",
+        )
+
+    member = (
+        db.query(TenantMember)
+        .filter_by(tenant_id=user.tenant_id, user_hash=user.user_hash)
+        .first()
+    )
+
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not a member of this organization",
+        )
+
+    return member
+
+
 def require_role(*roles: str):
     """
     Dependency factory to require specific roles.
+    Reads role from TenantMember (not UserIdentity).
 
     Usage:
         @router.get("/admin-only")
-        def admin_route(
-            user: UserIdentity = Depends(require_role("admin"))
-        ):
+        def admin_route(member: TenantMember = Depends(require_role("admin"))):
             return {"message": "Admin access granted"}
     """
 
     def role_checker(
-        user: UserIdentity = Depends(get_current_user_identity),
-    ) -> UserIdentity:
-        if user.role not in roles:
+        member: TenantMember = Depends(get_tenant_member),
+    ) -> TenantMember:
+        if member.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Required roles: {', '.join(roles)}",
             )
-        return user
+        return member
 
     return role_checker
 
@@ -177,36 +203,31 @@ def require_role(*roles: str):
 def check_permission_to_view_user(
     target_user_hash: str,
     current_user: UserIdentity = Depends(get_current_user_identity),
-    permission_service: PermissionService = Depends(get_permission_service),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
 ) -> tuple[UserIdentity, bool, str]:
     """
     Check if current user has permission to view target user's data.
     Returns (current_user, can_view, reason)
 
-    Usage:
-        @router.get("/users/{user_hash}/data")
-        def get_user_data(
-            user_hash: str,
-            permission_check: tuple = Depends(check_permission_to_view_user)
-        ):
-            current_user, can_view, reason = permission_check
-            if not can_view:
-                raise HTTPException(status_code=403, detail=reason)
-            # ... proceed with fetching data
+    Uses TenantMember for role checks (Phase 2).
     """
+    permission_service = PermissionService(db)
     can_view, reason = permission_service.can_view_user_data(
-        current_user, target_user_hash
+        db, member, target_user_hash
     )
 
     # Log the access attempt
-    permission_service.log_data_access(
-        accessor_hash=current_user.user_hash,
+    PermissionService.log_data_access(
+        db,
+        actor_hash=member.user_hash,
+        actor_role=member.role,
         target_hash=target_user_hash,
         action="view_attempt",
+        tenant_id=str(member.tenant_id),
         details={
             "granted": can_view,
             "reason": reason,
-            "current_user_role": current_user.role,
         },
     )
 
