@@ -41,6 +41,15 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Request body too large"},
             )
 
+        # Check URL query params for injection patterns
+        query_string = str(request.url.query)
+        if query_string and (check_sql_injection(query_string) or check_xss(query_string)):
+            logger.warning("Suspicious query string blocked: %s", path)
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid request parameters"},
+            )
+
         # Process request
         response = await call_next(request)
         return response

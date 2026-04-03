@@ -34,10 +34,6 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 # Log verification failure but don't break the request flow
                 logger.debug("Failed to verify JWT and extract tenant: %s", e)
 
-        # Fallback to X-Tenant-ID header
-        if not tenant_id:
-            tenant_id = request.headers.get("X-Tenant-ID")
-
         request.state.tenant_id = tenant_id
 
         response = await call_next(request)

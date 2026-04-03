@@ -8,11 +8,15 @@ Also exposes marketplace endpoints for connecting/disconnecting integrations.
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 
 from app.models.identity import UserIdentity
-from app.api.deps.auth import get_current_user_identity
+from app.models.tenant import TenantMember
+from app.api.deps.auth import get_current_user_identity, get_tenant_member
+from app.core.database import get_db
 from app.integrations.composio_client import composio_client
+from app.services.audit_service import AuditService, AuditAction
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("sentinel.api.tools")
@@ -114,7 +118,7 @@ class IntegrationStatusResponse(BaseModel):
 @router.get("/status", response_model=IntegrationStatusResponse)
 async def get_integration_status(
     entity_id: Optional[str] = None,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get status of external tool integrations
@@ -140,9 +144,10 @@ async def get_integration_status(
     }
 
     connected_tools: List[str] = []
-    if composio_enabled and entity_id:
-        connected_tools = await composio_client.get_connected_integrations(entity_id)
-    # If no entity_id, we can't check specific connections — leave as []
+    effective_entity_id = entity_id or member.user_hash
+    if composio_enabled and effective_entity_id:
+        connected_tools = await composio_client.get_connected_integrations(effective_entity_id)
+    # If no entity_id and no member hash, leave as []
 
     return IntegrationStatusResponse(
         composio_enabled=composio_enabled,
@@ -154,7 +159,7 @@ async def get_integration_status(
 @router.post("/execute", response_model=ToolExecuteResponse)
 async def execute_tool(
     request: ToolExecuteRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Execute an external tool action via Composio
@@ -167,10 +172,10 @@ async def execute_tool(
     - Admin users can query other users' data (for team insights)
     """
     # Default to current user's entity if not specified
-    entity_id = request.entity_id or current_user.user_hash
+    entity_id = request.entity_id or member.user_hash
 
     # Security check: Only admins can query other users
-    if entity_id != current_user.user_hash and current_user.role != "admin":
+    if entity_id != member.user_hash and member.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions to query other users",
@@ -212,7 +217,7 @@ async def execute_tool(
 @router.post("/calendar/analyze")
 async def analyze_calendar_load(
     request: CalendarAnalysisRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Analyze calendar meeting load and detect burnout signals
@@ -225,10 +230,10 @@ async def analyze_calendar_load(
     - Comparison to healthy baselines
     """
     # Default to current user
-    entity_id = request.entity_id or current_user.user_hash
+    entity_id = request.entity_id or member.user_hash
 
     # Security check
-    if entity_id != current_user.user_hash and current_user.role != "admin":
+    if entity_id != member.user_hash and member.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions to analyze other users",
@@ -259,7 +264,7 @@ async def analyze_calendar_load(
 async def get_calendar_events(
     entity_id: str,
     days_ahead: int = 7,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Fetch calendar events for a user
@@ -269,7 +274,7 @@ async def get_calendar_events(
         days_ahead: Number of days to look ahead (default 7)
     """
     # Security check
-    if entity_id != current_user.user_hash and current_user.role != "admin":
+    if entity_id != member.user_hash and member.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions",
@@ -297,7 +302,7 @@ async def get_calendar_events(
 @router.post("/slack/activity")
 async def get_slack_activity(
     request: SlackActivityRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get Slack activity metrics for a user
@@ -307,7 +312,7 @@ async def get_slack_activity(
     target_entity = request.entity_id
 
     # Security check
-    if target_entity != current_user.user_hash and not current_user.role == "admin":
+    if target_entity != member.user_hash and member.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions",
@@ -385,7 +390,7 @@ _AVAILABLE_TOOLS = [
 
 @router.get("/available")
 async def get_available_tools(
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get list of all available integration tools.
@@ -401,7 +406,7 @@ async def get_available_tools(
 
 @router.get("/connected")
 async def get_connected_tools(
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get list of connected integration tools for the current user.
@@ -414,7 +419,7 @@ async def get_connected_tools(
         return {"tools": [], "total": 0, "composio_enabled": False}
 
     connected_slugs = await composio_client.get_connected_integrations(
-        current_user.user_hash
+        member.user_hash
     )
 
     # Annotate with metadata from the catalogue where available
@@ -430,7 +435,8 @@ async def get_connected_tools(
 @router.post("/connect")
 async def connect_tool(
     request: ConnectToolRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
 ):
     """
     Initiate connection to an integration tool via Composio.
@@ -441,7 +447,7 @@ async def connect_tool(
     if not composio_client.is_available():
         logger.warning(
             "connect_tool called but Composio is not configured "
-            f"(user={current_user.user_hash}, tool={request.tool_slug})"
+            f"(user={member.user_hash}, tool={request.tool_slug})"
         )
         return {
             "success": False,
@@ -454,8 +460,17 @@ async def connect_tool(
         # Composio initiates OAuth and returns a redirect URL for the user
         redirect_url = await composio_client.initiate_connection(
             tool_slug=request.tool_slug,
-            entity_id=current_user.user_hash,
+            entity_id=member.user_hash,
         )
+        audit = AuditService(db)
+        audit.log(
+            actor_hash=member.user_hash,
+            actor_role=member.role,
+            action=AuditAction.TOOL_CONNECTED,
+            details={"tool_slug": request.tool_slug},
+            tenant_id=member.tenant_id,
+        )
+        db.commit()
         return {
             "success": True,
             "tool_slug": request.tool_slug,
@@ -475,7 +490,8 @@ async def connect_tool(
 @router.post("/disconnect")
 async def disconnect_tool(
     request: DisconnectToolRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
 ):
     """
     Disconnect an integration tool for the current user.
@@ -486,7 +502,7 @@ async def disconnect_tool(
     if not composio_client.is_available():
         logger.warning(
             "disconnect_tool called but Composio is not configured "
-            f"(user={current_user.user_hash}, tool={request.tool_slug})"
+            f"(user={member.user_hash}, tool={request.tool_slug})"
         )
         return {
             "success": False,
@@ -497,8 +513,17 @@ async def disconnect_tool(
     try:
         await composio_client.remove_connection(
             tool_slug=request.tool_slug,
-            entity_id=current_user.user_hash,
+            entity_id=member.user_hash,
         )
+        audit = AuditService(db)
+        audit.log(
+            actor_hash=member.user_hash,
+            actor_role=member.role,
+            action=AuditAction.TOOL_DISCONNECTED,
+            details={"tool_slug": request.tool_slug},
+            tenant_id=member.tenant_id,
+        )
+        db.commit()
         return {
             "success": True,
             "tool_slug": request.tool_slug,
@@ -516,7 +541,7 @@ async def disconnect_tool(
 @router.post("/marketplace/execute")
 async def execute_marketplace_tool_action(
     request: MarketplaceToolExecuteRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Execute an action on a connected integration tool.
@@ -527,7 +552,7 @@ async def execute_marketplace_tool_action(
     if not composio_client.is_available():
         logger.warning(
             "execute marketplace action called but Composio is not configured "
-            f"(user={current_user.user_hash}, tool={request.tool_slug})"
+            f"(user={member.user_hash}, tool={request.tool_slug})"
         )
         return {
             "success": False,
@@ -541,7 +566,7 @@ async def execute_marketplace_tool_action(
         tool=request.tool_slug,
         action=request.action,
         params=request.params,
-        entity_id=current_user.user_hash,
+        entity_id=member.user_hash,
     )
 
     if not result.get("success"):

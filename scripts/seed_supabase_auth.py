@@ -492,38 +492,28 @@ def seed_database_records() -> None:
             for user in TEST_USERS:
                 email: str = user["email"]
                 role: str = user["role"]
-                manager_email: str | None = user.get("user_metadata", {}).get(
-                    "manager_email"
-                )
 
                 user_hash: str = privacy.hash_identity(email)
                 email_encrypted: bytes = privacy.encrypt(email)
-                manager_hash: str | None = (
-                    privacy.hash_identity(manager_email) if manager_email else None
-                )
 
                 db.execute(
                     text(
                         """
                         INSERT INTO identity.users
-                            (user_hash, email_encrypted, role, manager_hash,
+                            (user_hash, email_encrypted,
                              consent_share_with_manager, consent_share_anonymized,
                              created_at)
                         VALUES
-                            (:user_hash, :email_encrypted, :role, :manager_hash,
+                            (:user_hash, :email_encrypted,
                              false, true,
                              NOW())
                         ON CONFLICT (user_hash) DO UPDATE SET
-                            email_encrypted = EXCLUDED.email_encrypted,
-                            role            = EXCLUDED.role,
-                            manager_hash    = EXCLUDED.manager_hash
+                            email_encrypted = EXCLUDED.email_encrypted
                         """
                     ),
                     {
                         "user_hash": user_hash,
                         "email_encrypted": email_encrypted,
-                        "role": role,
-                        "manager_hash": manager_hash,
                     },
                 )
                 print(f"      {email} -> user_hash={user_hash[:8]}... role={role}")

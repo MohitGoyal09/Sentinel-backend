@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from app.core.database import get_db
 from app.models.analytics import RiskScore
 from app.models.identity import UserIdentity
-from app.api.deps.auth import get_current_user_identity
+from app.models.tenant import TenantMember
+from app.api.deps.auth import get_tenant_member
 
 router = APIRouter()
 
@@ -83,7 +84,7 @@ async def calculate_roi(
     elevated_risk_count: Optional[int] = Query(None, description="Number of elevated-risk employees"),
     avg_salary: float = Query(80000, description="Average employee salary"),
     industry: str = Query("default", description="Industry type for cost multipliers"),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db)
 ):
     """
@@ -103,22 +104,31 @@ async def calculate_roi(
     # Auto-fetch risk counts from team data if not provided
     if high_risk_count is None or elevated_risk_count is None:
         # Query team members
-        if current_user.role == "admin":
+        if member.role == "admin":
             # Admin sees all users
             team_members = db.query(UserIdentity).all()
         else:
-            # Manager sees their direct reports
-            team_members = db.query(UserIdentity).filter(
-                UserIdentity.manager_hash == current_user.user_hash
-            ).all()
+            # Manager sees their team members (via TenantMember team_id)
+            team_member_hashes = [
+                tm.user_hash
+                for tm in db.query(TenantMember.user_hash).filter_by(
+                    team_id=member.team_id,
+                    tenant_id=member.tenant_id,
+                ).all()
+            ] if member.team_id else []
+            team_members = (
+                db.query(UserIdentity)
+                .filter(UserIdentity.user_hash.in_(team_member_hashes))
+                .all()
+            )
 
         # Count risk levels from latest risk scores
         critical_count = 0
         elevated_count = 0
 
-        for member in team_members:
+        for team_member in team_members:
             risk_score = db.query(RiskScore).filter(
-                RiskScore.user_hash == member.user_hash
+                RiskScore.user_hash == team_member.user_hash
             ).order_by(RiskScore.timestamp.desc()).first()
 
             if risk_score:

@@ -121,20 +121,12 @@ def create_test_users():
 
             if existing:
                 print(
-                    f"[WARN] User {email} already exists, updating role and relationships..."
+                    f"[WARN] User {email} already exists, updating consent settings..."
                 )
-                existing.role = user_data["role"]
                 existing.consent_share_with_manager = user_data[
                     "consent_share_with_manager"
                 ]
                 existing.consent_share_anonymized = True  # Default
-
-                # Set manager hash if applicable
-                if user_data["manager_email"]:
-                    manager_hash = privacy.hash_identity(user_data["manager_email"])
-                    existing.manager_hash = manager_hash
-                else:
-                    existing.manager_hash = None
 
                 session.add(existing)
                 created_users.append(
@@ -160,14 +152,7 @@ def create_test_users():
                     consent_share_with_manager=user_data["consent_share_with_manager"],
                     consent_share_anonymized=True,
                     monitoring_paused_until=None,
-                    manager_hash=None,
                 )
-
-                # Set manager hash if applicable
-                if user_data["manager_email"]:
-                    new_user.manager_hash = privacy.hash_identity(
-                        user_data["manager_email"]
-                    )
 
                 session.add(new_user)
 

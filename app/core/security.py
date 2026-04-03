@@ -50,7 +50,8 @@ class PrivacyEngine:
     def decrypt(self, encrypted: bytes) -> str:
         try:
             return self.cipher.decrypt(encrypted).decode()
-        except Exception:
+        except Exception as e:
+            logger.warning("Decryption failed: %s", type(e).__name__)
             return ""
 
 

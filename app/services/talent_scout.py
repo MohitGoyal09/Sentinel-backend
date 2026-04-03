@@ -1,8 +1,10 @@
 import logging
 import networkx as nx
-from typing import Dict
+from typing import Dict, Optional
+from uuid import UUID
 from sqlalchemy.orm import Session
 from app.models.analytics import Event, GraphEdge, CentralityScore
+from app.models.tenant import TenantMember
 
 logger = logging.getLogger("sentinel.talent_scout")
 
@@ -13,12 +15,28 @@ class TalentScout:
     def __init__(self, db: Session):
         self.db = db
 
-    def analyze_network(self, team_hash: str = None) -> Dict:
+    def analyze_network(self, team_hash: str = None, tenant_id: Optional[UUID] = None) -> Dict:
         """Calculate centrality metrics for all users"""
         G = nx.DiGraph()
 
-        # Build graph from interactions
-        edges = self.db.query(GraphEdge).all()
+        # Build graph from interactions — scoped to tenant if provided
+        if tenant_id is not None:
+            tenant_hashes = {
+                tm.user_hash
+                for tm in self.db.query(TenantMember.user_hash)
+                .filter_by(tenant_id=tenant_id)
+                .all()
+            }
+            edges = (
+                self.db.query(GraphEdge)
+                .filter(
+                    GraphEdge.source_hash.in_(tenant_hashes),
+                    GraphEdge.target_hash.in_(tenant_hashes),
+                )
+                .all()
+            )
+        else:
+            edges = self.db.query(GraphEdge).all()
         for edge in edges:
             G.add_edge(edge.source_hash, edge.target_hash, weight=edge.weight)
 

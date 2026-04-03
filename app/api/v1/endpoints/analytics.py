@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.core.database import get_db
 from app.models.analytics import RiskHistory
+from app.models.tenant import TenantMember
 from typing import List, Dict, Any
 
 router = APIRouter()
@@ -21,9 +22,18 @@ def get_team_energy_heatmap(
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
 
-    # Get all risk history entries within timeframe
+    # Scope to current user's tenant
+    tenant_hashes = [
+        tm.user_hash
+        for tm in db.query(TenantMember.user_hash)
+        .filter_by(tenant_id=user.tenant_id)
+        .all()
+    ]
+
+    # Get risk history entries within timeframe, scoped to tenant
     history = db.query(RiskHistory).filter(
-        RiskHistory.timestamp >= cutoff
+        RiskHistory.timestamp >= cutoff,
+        RiskHistory.user_hash.in_(tenant_hashes),
     ).all()
 
     # Group by date

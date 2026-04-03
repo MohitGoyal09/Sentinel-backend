@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, DateTime, JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 from datetime import datetime
 from uuid import uuid4
 
@@ -23,6 +23,9 @@ class Tenant(Base):
     members = relationship(
         "TenantMember", back_populates="tenant", cascade="all, delete-orphan"
     )
+    teams = relationship(
+        "Team", back_populates="tenant", cascade="all, delete-orphan"
+    )
 
 
 class TenantMember(Base):
@@ -35,15 +38,22 @@ class TenantMember(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("identity.tenants.id"),
+        ForeignKey("identity.tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     user_hash = Column(
         String(64), ForeignKey("identity.users.user_hash"), nullable=False, index=True
     )
-    role = Column(String(20), default="member")
+    role = Column(String(20), default="employee")
+    team_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("identity.teams.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     invited_by = Column(String(64), nullable=True)
     joined_at = Column(DateTime, default=datetime.utcnow)
 
     tenant = relationship("Tenant", back_populates="members")
+    team = relationship("Team", back_populates="members")

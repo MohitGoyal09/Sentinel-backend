@@ -1,6 +1,10 @@
+import logging
+
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List
+
+logger = logging.getLogger("sentinel.engines")
 
 from app.services.safety_valve import SafetyValve
 from app.services.talent_scout import TalentScout
@@ -33,7 +37,9 @@ from app.models.identity import UserIdentity
 from app.core.security import privacy
 from app.services.permission_service import PermissionService, PermissionDenied
 
-from app.api.deps.auth import get_current_user, get_current_user_identity, require_role
+from app.api.deps.auth import get_current_user, get_current_user_identity, require_role, get_tenant_member
+from app.models.tenant import TenantMember
+from app.services.audit_service import AuditService, AuditAction
 
 
 router = APIRouter()
@@ -42,25 +48,21 @@ router = APIRouter()
 # Permission check helper
 def check_user_data_access(
     db: Session,
-    current_user: UserIdentity,
+    member: TenantMember,
     target_user_hash: str,
 ) -> None:
     """
     Check if current user has permission to access target user's data.
     Raises HTTPException 403 if access is denied.
     """
-    if not current_user:
+    if not member:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
         )
 
     if target_user_hash == "global":
-        from app.models.tenant import TenantMember
-        member = db.query(TenantMember).filter(
-            TenantMember.user_hash == current_user.user_hash
-        ).first()
-        if not member or member.role not in ("admin", "manager"):
+        if member.role not in ("admin", "manager"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions for global access",
@@ -68,16 +70,18 @@ def check_user_data_access(
         return
 
     perm_service = PermissionService(db)
-    can_view, reason = perm_service.can_view_user_data(current_user, target_user_hash)
+    can_view, reason = perm_service.can_view_user_data(db, member, target_user_hash)
 
     # Log the access attempt
-    accessor_hash = getattr(current_user, "user_hash", None)
+    accessor_hash = getattr(member, "user_hash", None)
     if accessor_hash is not None:
         accessor_hash = str(accessor_hash)
     else:
         accessor_hash = "unknown"
     perm_service.log_data_access(
-        accessor_hash=accessor_hash,
+        db,
+        actor_hash=accessor_hash,
+        actor_role=member.role,
         target_hash=target_user_hash,
         action="view_engine_data",
         details={
@@ -114,7 +118,7 @@ def create_persona(
     request: CreatePersonaRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
 ):
     """Create a persona with 30 days of synthetic behavioral data"""
     sim = RealTimeSimulator(db)
@@ -159,11 +163,12 @@ async def check_user_context(
     timestamp: str = None,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Check contextual explanation for a specific timestamp"""
 
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     enricher = ContextEnricher(db)
 
@@ -196,10 +201,11 @@ def analyze_user_safety(
     user_hash: str,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Analyze burnout risk for a specific user"""
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     engine = SafetyValve(db)
     result = engine.analyze(user_hash)
@@ -211,14 +217,15 @@ def analyze_user_network(
     user_hash: str,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Analyze network centrality for a specific user"""
 
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     engine = TalentScout(db)
-    result = engine.analyze_network(user_hash)
+    result = engine.analyze_network(user_hash, tenant_id=member.tenant_id)
     return TalentScoutResponse(success=True, data=result)
 
 
@@ -226,43 +233,48 @@ def analyze_user_network(
 def analyze_team_culture(
     request: AnalyzeTeamRequest,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Analyze culture and contagion risk for a team"""
 
     team_hashes = request.team_hashes
 
     if team_hashes:
-        if current_user.role == "employee":
-            allowed = {current_user.user_hash}
+        if member.role == "employee":
+            allowed = {member.user_hash}
             if not set(team_hashes).issubset(allowed):
                 raise HTTPException(status_code=403, detail="Employees can only view their own data")
-        elif current_user.role == "manager":
-            team = set(
-                m.user_hash
-                for m in db.query(UserIdentity.user_hash)
-                .filter(UserIdentity.manager_hash == current_user.user_hash)
-                .all()
-            )
-            team.add(current_user.user_hash)
+        elif member.role == "manager":
+            team_member_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(
+                    team_id=member.team_id, tenant_id=member.tenant_id
+                ).all()
+            ] if member.team_id else []
+            team = set(team_member_hashes)
+            team.add(member.user_hash)
             if not set(team_hashes).issubset(team):
                 raise HTTPException(status_code=403, detail="Managers can only view their team members")
 
     if not team_hashes:
         # Analyze current user's team based on role
-        if current_user and current_user.role == "manager":
-            team_members = (
-                db.query(UserIdentity.user_hash)
-                .filter(UserIdentity.manager_hash == current_user.user_hash)
-                .all()
-            )
-            team_hashes = [current_user.user_hash] + [m.user_hash for m in team_members]
-        elif current_user and current_user.role == "employee":
-            team_hashes = [current_user.user_hash]
+        if member.role == "manager":
+            team_member_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(
+                    team_id=member.team_id, tenant_id=member.tenant_id
+                ).all()
+            ] if member.team_id else []
+            team_hashes = [member.user_hash] + team_member_hashes
+        elif member.role == "employee":
+            team_hashes = [member.user_hash]
         else:
-            # Admin sees all
-            users = db.query(UserIdentity).all()
-            team_hashes = [u.user_hash for u in users]
+            # Admin sees all users in tenant
+            tenant_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+            ]
+            team_hashes = tenant_hashes
 
     engine = CultureThermometer(db)
     result = engine.analyze_team(team_hashes)
@@ -273,7 +285,7 @@ def analyze_team_culture(
 def get_team_forecast(
     request: ForecastRequest,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get SIR epidemic forecast for team contagion risk.
@@ -288,35 +300,40 @@ def get_team_forecast(
     days = request.days
 
     if team_hashes:
-        if current_user.role == "employee":
-            allowed = {current_user.user_hash}
+        if member.role == "employee":
+            allowed = {member.user_hash}
             if not set(team_hashes).issubset(allowed):
                 raise HTTPException(status_code=403, detail="Employees can only view their own data")
-        elif current_user.role == "manager":
-            team = set(
-                m.user_hash
-                for m in db.query(UserIdentity.user_hash)
-                .filter(UserIdentity.manager_hash == current_user.user_hash)
-                .all()
-            )
-            team.add(current_user.user_hash)
+        elif member.role == "manager":
+            team_member_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(
+                    team_id=member.team_id, tenant_id=member.tenant_id
+                ).all()
+            ] if member.team_id else []
+            team = set(team_member_hashes)
+            team.add(member.user_hash)
             if not set(team_hashes).issubset(team):
                 raise HTTPException(status_code=403, detail="Managers can only view their team members")
 
     if not team_hashes:
         # Analyze current user's team based on role
-        if current_user and current_user.role == "manager":
-            team_members = (
-                db.query(UserIdentity.user_hash)
-                .filter(UserIdentity.manager_hash == current_user.user_hash)
-                .all()
-            )
-            team_hashes = [current_user.user_hash] + [m.user_hash for m in team_members]
-        elif current_user and current_user.role == "employee":
-            team_hashes = [current_user.user_hash]
+        if member.role == "manager":
+            team_member_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(
+                    team_id=member.team_id, tenant_id=member.tenant_id
+                ).all()
+            ] if member.team_id else []
+            team_hashes = [member.user_hash] + team_member_hashes
+        elif member.role == "employee":
+            team_hashes = [member.user_hash]
         else:
-            users = db.query(UserIdentity).all()
-            team_hashes = [u.user_hash for u in users]
+            # Admin sees all users in tenant
+            team_hashes = [
+                tm.user_hash for tm in
+                db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+            ]
 
     total_members = len(team_hashes)
 
@@ -350,13 +367,14 @@ def get_nudge(
     user_hash: str,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Generate a personalized LLM-based nudge for a user based on their risk profile"""
     from app.services.llm import llm_service
     from app.models.identity import UserIdentity as IdentityModel
 
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     engine = SafetyValve(db)
     analysis = engine.analyze(user_hash)
@@ -465,10 +483,11 @@ def dismiss_nudge(
     user_hash: str,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Dismiss an active nudge for a user"""
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     from app.models.identity import AuditLog
     from datetime import datetime
@@ -477,7 +496,7 @@ def dismiss_nudge(
         user_hash=user_hash,
         action="nudge_dismissed",
         details={
-            "dismissed_by": current_user.user_hash,
+            "dismissed_by": member.user_hash,
             "timestamp": datetime.utcnow().isoformat(),
         },
     )
@@ -492,10 +511,11 @@ def schedule_break(
     user_hash: str,
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Schedule a break for a user (logs the action)"""
     # RBAC Check: Verify user has permission to access this data
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     from app.models.identity import AuditLog
     from datetime import datetime, timedelta
@@ -506,7 +526,7 @@ def schedule_break(
         user_hash=user_hash,
         action="break_scheduled",
         details={
-            "scheduled_by": current_user.user_hash,
+            "scheduled_by": member.user_hash,
             "scheduled_for": break_time.isoformat(),
             "timestamp": datetime.utcnow().isoformat(),
         },
@@ -526,25 +546,31 @@ def list_events(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = 0,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Get recent activity stream (role-filtered)"""
     query = db.query(Event)
 
     # Role-based filtering
-    if current_user.role == "employee":
-        query = query.filter(Event.user_hash == current_user.user_hash)
-    elif current_user.role == "manager":
-        from app.models.identity import UserIdentity as UI
-        team_hashes = set(
-            m.user_hash
-            for m in db.query(UI.user_hash)
-            .filter(UI.manager_hash == current_user.user_hash)
-            .all()
-        )
-        team_hashes.add(current_user.user_hash)
+    if member.role == "employee":
+        query = query.filter(Event.user_hash == member.user_hash)
+    elif member.role == "manager":
+        team_member_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(
+                team_id=member.team_id, tenant_id=member.tenant_id
+            ).all()
+        ] if member.team_id else []
+        team_hashes = set(team_member_hashes)
+        team_hashes.add(member.user_hash)
         query = query.filter(Event.user_hash.in_(team_hashes))
-    # admin: no filter, sees all events
+    else:
+        # admin: filter by tenant
+        tenant_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+        ]
+        query = query.filter(Event.user_hash.in_(tenant_hashes))
 
     events = (
         query
@@ -566,7 +592,7 @@ def list_users(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 50,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     List all users with their current risk scores (paginated)
@@ -582,20 +608,26 @@ def list_users(
     from app.models.identity import UserIdentity
     from sqlalchemy import desc
 
-    # Get team member hashes first for managers
+    # Get team member hashes first for role-based scoping
     team_member_hashes = None
-    if current_user and current_user.role == "manager":
-        manager_hash = current_user.user_hash
-        team_member_hashes = set(
-            m.user_hash
-            for m in db.query(UserIdentity.user_hash)
-            .filter(UserIdentity.manager_hash == manager_hash)
-            .all()
-        )
+    if member.role == "manager":
+        raw_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(
+                team_id=member.team_id, tenant_id=member.tenant_id
+            ).all()
+        ] if member.team_id else []
+        team_member_hashes = set(raw_hashes)
         # Add manager themselves
-        team_member_hashes.add(manager_hash)
-    elif current_user and current_user.role == "employee":
-        team_member_hashes = {current_user.user_hash}
+        team_member_hashes.add(member.user_hash)
+    elif member.role == "employee":
+        team_member_hashes = {member.user_hash}
+    else:
+        # Admin: scope to tenant
+        team_member_hashes = set(
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+        )
 
     # Use efficient pagination with JOIN in a single query
     latest_risk = (
@@ -671,12 +703,13 @@ def get_risk_history(
     days: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db),
     current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Get historical risk scores for a user"""
     from app.models.analytics import RiskHistory
 
     # RBAC Check
-    check_user_data_access(db, current_user, user_hash)
+    check_user_data_access(db, member, user_hash)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
     history = (
@@ -712,7 +745,7 @@ def inject_event(
     request: InjectEventRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
 ):
     """Inject a real-time event for demo purposes (admin only)"""
     sim = RealTimeSimulator(db)
@@ -762,17 +795,17 @@ def inject_event(
 @router.get("/network/global/talent")
 def get_global_talent(
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    member: TenantMember = Depends(require_role("manager", "admin")),
 ):
     """Get global talent network analysis"""
     engine = TalentScout(db)
-    return {"success": True, "data": engine.analyze_network()}
+    return {"success": True, "data": engine.analyze_network(tenant_id=member.tenant_id)}
 
 
 @router.get("/global/network")
 def get_global_network(
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    member: TenantMember = Depends(require_role("manager", "admin")),
 ):
     """Get global network metrics"""
     engine = TalentScout(db)
@@ -787,7 +820,7 @@ def seed_user_history(
     user_hash: str,
     persona_type: str = "alex_burnout",
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
 ):
     """Seed 30 days of historical risk data for an existing user (admin/demo use)"""
     from app.models.analytics import RiskHistory
@@ -807,6 +840,17 @@ def seed_user_history(
     engine.seed_risk_history(user_hash, persona_type)
     new_count = db.query(RiskHistory).filter_by(user_hash=user_hash).count()
 
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=member.user_hash,
+        actor_role=member.role,
+        action=AuditAction.ENGINE_RECOMPUTED,
+        target_hash=user_hash,
+        details={"trigger": "manual_seed", "persona_type": persona_type},
+        tenant_id=member.tenant_id,
+    )
+    db.commit()
+
     return {
         "success": True,
         "data": {"message": f"Seeded {new_count} history records", "seeded": True},
@@ -819,34 +863,34 @@ def seed_user_history(
 @router.get("/dashboard/summary")
 def get_dashboard_summary(
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """Get summary metrics for dashboard - filtered by role"""
     from app.models.analytics import RiskScore
-    from sqlalchemy import func
 
     # Filter based on role
-    user_filter = None
-    if current_user and current_user.role == "manager":
-        # Get team member hashes
-        team_members = (
-            db.query(UserIdentity.user_hash)
-            .filter(UserIdentity.manager_hash == current_user.user_hash)
-            .all()
-        )
-        user_filter = [current_user.user_hash] + [m.user_hash for m in team_members]
-    elif current_user and current_user.role == "employee":
-        user_filter = [current_user.user_hash]
-
-    if user_filter:
-        total_users = len(user_filter)
-        risk_scores = (
-            db.query(RiskScore).filter(RiskScore.user_hash.in_(user_filter)).all()
-        )
+    if member.role == "manager":
+        # Get team member hashes for this manager's team
+        team_member_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(
+                team_id=member.team_id, tenant_id=member.tenant_id
+            ).all()
+        ] if member.team_id else []
+        user_filter = [member.user_hash] + team_member_hashes
+    elif member.role == "employee":
+        user_filter = [member.user_hash]
     else:
-        # Admin sees all
-        total_users = db.query(func.count(UserIdentity.user_hash)).scalar() or 0
-        risk_scores = db.query(RiskScore).all()
+        # Admin: scope to tenant
+        user_filter = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+        ]
+
+    total_users = len(user_filter)
+    risk_scores = (
+        db.query(RiskScore).filter(RiskScore.user_hash.in_(user_filter)).all()
+    )
 
     # Count risk levels
     risk_counts = {}

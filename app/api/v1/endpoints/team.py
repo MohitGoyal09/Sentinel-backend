@@ -17,6 +17,7 @@ from collections import defaultdict
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
 from app.models.analytics import RiskScore, RiskHistory, GraphEdge, Event, SkillProfile
+from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService
 
@@ -34,11 +35,18 @@ def anonymize_user_hash(user_hash: str, index: int) -> str:
     return f"User {chr(65 + index)}"  # A, B, C, ...
 
 
-def get_team_members(db: Session, manager_hash: str) -> List[UserIdentity]:
-    """Get all employees who report to this manager."""
-    return (
-        db.query(UserIdentity).filter(UserIdentity.manager_hash == manager_hash).all()
-    )
+def get_team_members(db: Session, team_id, tenant_id) -> List[UserIdentity]:
+    """Get all UserIdentity records for members of the given team."""
+    member_hashes = [
+        tm.user_hash
+        for tm in db.query(TenantMember.user_hash).filter_by(
+            team_id=team_id,
+            tenant_id=tenant_id,
+        ).all()
+    ]
+    if not member_hashes:
+        return []
+    return db.query(UserIdentity).filter(UserIdentity.user_hash.in_(member_hashes)).all()
 
 
 @router.get("/", response_model=dict)
@@ -46,7 +54,7 @@ def get_my_team_dashboard(
     view_as: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    current_user: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -54,21 +62,32 @@ def get_my_team_dashboard(
 
     Admins can:
     - View all employees (Global View) if view_as is None
-    - View specific manager's team if view_as={manager_hash}
+    - View specific team if view_as={team_id}
 
     Managers:
-    - Only view their direct reports
+    - Only view their own team members
     """
-    target_manager_hash = current_user.user_hash
     is_global_view = False
+
+    # Resolve the target team_id and tenant_id for scoping
+    target_team_id = current_user.team_id
+    target_tenant_id = current_user.tenant_id
 
     # Permission Logic
     if current_user.role == "admin":
         if view_as:
-            target_manager_hash = view_as
+            # view_as is a team_id UUID string; find that team's members
+            import uuid as _uuid
+            try:
+                target_team_id = _uuid.UUID(view_as)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="view_as must be a valid team UUID",
+                )
         else:
             is_global_view = True
-    elif view_as and view_as != current_user.user_hash:
+    elif view_as and view_as != str(current_user.team_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Managers can only view their own team",
@@ -76,20 +95,35 @@ def get_my_team_dashboard(
 
     # Query Data
     if is_global_view:
-        # Admin Global View - All Users
-        total_count = db.query(UserIdentity).count()
-        team_members = db.query(UserIdentity).offset(skip).limit(limit).all()
-        dashboard_title = "Organization Overview"
-    else:
-        # Manager Specific View
-        total_count = (
-            db.query(UserIdentity)
-            .filter(UserIdentity.manager_hash == target_manager_hash)
-            .count()
-        )
+        # Admin Global View - Scoped to tenant
+        tenant_hashes = [
+            tm.user_hash
+            for tm in db.query(TenantMember.user_hash)
+            .filter_by(tenant_id=current_user.tenant_id)
+            .all()
+        ]
+        total_count = len(tenant_hashes)
         team_members = (
             db.query(UserIdentity)
-            .filter(UserIdentity.manager_hash == target_manager_hash)
+            .filter(UserIdentity.user_hash.in_(tenant_hashes))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        dashboard_title = "Organization Overview"
+    else:
+        # Team Specific View via TenantMember
+        team_member_hashes = [
+            tm.user_hash
+            for tm in db.query(TenantMember.user_hash).filter_by(
+                team_id=target_team_id,
+                tenant_id=target_tenant_id,
+            ).all()
+        ]
+        total_count = len(team_member_hashes)
+        team_members = (
+            db.query(UserIdentity)
+            .filter(UserIdentity.user_hash.in_(team_member_hashes))
             .offset(skip)
             .limit(limit)
             .all()
@@ -99,7 +133,7 @@ def get_my_team_dashboard(
     if not team_members and not is_global_view:
         return {
             "team": {
-                "manager_hash": target_manager_hash,
+                "team_id": str(target_team_id) if target_team_id else None,
                 "member_count": 0,
                 "message": "No team members assigned",
                 "is_global_view": False,
@@ -154,23 +188,28 @@ def get_my_team_dashboard(
     # OR do a separate aggregate query for accurate total stats)
 
     if is_global_view:
-        # Global Aggregates (Efficient query)
+        # Global Aggregates (Scoped to tenant)
         risk_counts = (
             db.query(RiskScore.risk_level, func.count(RiskScore.risk_level))
+            .filter(RiskScore.user_hash.in_(tenant_hashes))
             .group_by(RiskScore.risk_level)
             .all()
         )
         risk_dist_map = {str(level): int(count) for level, count in risk_counts}
         consent_total = (
             db.query(UserIdentity)
-            .filter(UserIdentity.consent_share_with_manager == True)
+            .filter(
+                UserIdentity.user_hash.in_(tenant_hashes),
+                UserIdentity.consent_share_with_manager == True,
+            )
             .count()
         )
         total_employees = total_count
     else:
         # Team Specific Aggregates
         team_hashes_all = [
-            str(m.user_hash) for m in get_team_members(db, target_manager_hash)
+            str(m.user_hash)
+            for m in get_team_members(db, target_team_id, target_tenant_id)
         ]
         risk_counts = (
             db.query(RiskScore.risk_level, func.count(RiskScore.risk_level))
@@ -181,7 +220,7 @@ def get_my_team_dashboard(
         risk_dist_map = {str(level): int(count) for level, count in risk_counts}
         consent_total = sum(
             1
-            for m in get_team_members(db, target_manager_hash)
+            for m in get_team_members(db, target_team_id, target_tenant_id)
             if bool(m.consent_share_with_manager)
         )
         total_employees = len(team_hashes_all)
@@ -211,14 +250,6 @@ def get_my_team_dashboard(
             event_metadata = event.metadata_
         except AttributeError:
             pass
-        anonymized_events.append(
-            {
-                "pseudonym": pseudonym,
-                "event_type": str(event.event_type) if event.event_type else None,
-                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
-                "metadata": event_metadata,
-            }
-        )
         if event_metadata is None and hasattr(event, "metadata"):
             event_metadata = event.metadata
         anonymized_events.append(
@@ -232,7 +263,7 @@ def get_my_team_dashboard(
 
     return {
         "team": {
-            "manager_hash": target_manager_hash,
+            "team_id": str(target_team_id) if target_team_id else None,
             "member_count": len(team_members),
             "members": anonymized_members,
             "total_count": total_count,
@@ -263,14 +294,14 @@ def get_my_team_dashboard(
 @router.get("/member/{user_hash}", response_model=dict)
 def get_team_member_details(
     user_hash: str,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    current_user: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
     Get detailed view of a specific team member.
 
     Access Rules:
-    1. Must be the employee's direct manager
+    1. Must be on the same team as the employee (or admin)
     2. Employee must have consented, OR
     3. Employee must be at CRITICAL risk for 36+ hours (emergency)
 
@@ -280,7 +311,7 @@ def get_team_member_details(
     perm_service = PermissionService(db)
 
     # Check if manager can view this employee
-    can_view, reason = perm_service.can_manager_view_employee(current_user, user_hash)
+    can_view, reason = perm_service.can_manager_view_employee(db, current_user, user_hash)
 
     # Get employee data
     employee = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
@@ -290,17 +321,27 @@ def get_team_member_details(
             status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found"
         )
 
-    # Verify this is manager's direct report
-    if employee.manager_hash != current_user.user_hash:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Not your direct report"
+    # Verify this employee is on the same team (admins bypass this check)
+    if current_user.role != "admin":
+        target_member = (
+            db.query(TenantMember)
+            .filter_by(user_hash=user_hash, tenant_id=current_user.tenant_id)
+            .first()
         )
+        if not target_member or target_member.team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not your direct report",
+            )
 
     # Log the access attempt
-    perm_service.log_data_access(
-        accessor_hash=current_user.user_hash,
+    PermissionService.log_data_access(
+        db,
+        actor_hash=current_user.user_hash,
+        actor_role=current_user.role,
         target_hash=user_hash,
         action="view_team_member",
+        tenant_id=str(current_user.tenant_id),
         details={
             "granted": can_view,
             "reason": reason,
@@ -399,7 +440,7 @@ def get_team_member_details(
 @router.get("/analytics", response_model=dict)
 def get_team_analytics(
     days: int = 30,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    current_user: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -415,7 +456,7 @@ def get_team_analytics(
     - Communication patterns
     """
     # Get team members
-    team_members = get_team_members(db, current_user.user_hash)
+    team_members = get_team_members(db, current_user.team_id, current_user.tenant_id)
 
     if not team_members:
         return {
@@ -503,7 +544,7 @@ def get_team_analytics(
 
 @router.get("/network", response_model=dict)
 def get_team_network(
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    current_user: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -513,7 +554,7 @@ def get_team_network(
     without identifying individuals (unless consented).
     """
     # Get team members
-    team_members = get_team_members(db, current_user.user_hash)
+    team_members = get_team_members(db, current_user.team_id, current_user.tenant_id)
 
     if not team_members:
         return {"nodes": [], "edges": [], "message": "No team members found"}
@@ -584,7 +625,7 @@ def get_team_network(
 def send_wellness_nudge(
     user_hash: str,
     message: Optional[str] = None,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    current_user: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -593,10 +634,23 @@ def send_wellness_nudge(
     Note: This should be used sparingly and thoughtfully.
     Consider whether a direct conversation might be more appropriate.
     """
-    # Verify employee is on manager's team
+    # Verify employee is on the manager's team
     employee = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
 
-    if not employee or employee.manager_hash != current_user.user_hash:
+    if not employee:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not your direct report"
+        )
+
+    # Check team membership (admins can nudge anyone in their tenant)
+    target_member = (
+        db.query(TenantMember)
+        .filter_by(user_hash=user_hash, tenant_id=current_user.tenant_id)
+        .first()
+    )
+    if current_user.role != "admin" and (
+        not target_member or target_member.team_id != current_user.team_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not your direct report"
         )
@@ -613,7 +667,8 @@ def send_wellness_nudge(
         user_hash=user_hash,
         action="manager_nudge_sent",
         details={
-            "manager_hash": current_user.user_hash,
+            "sender_hash": current_user.user_hash,
+            "team_id": str(current_user.team_id) if current_user.team_id else None,
             "message_preview": message[:50] if message else None,
             "timestamp": datetime.utcnow().isoformat(),
         },

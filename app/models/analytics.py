@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, DateTime, Integer, JSON, Index
+from sqlalchemy import BigInteger, Column, String, Float, DateTime, Integer, JSON, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
@@ -13,10 +13,11 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_user_timestamp", "user_hash", "timestamp"),
         Index("ix_events_type", "event_type"),
+        Index("ix_events_tenant", "tenant_id"),
         {"schema": "analytics"},
     )
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
     user_hash = Column(String(64), index=True)
     tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
@@ -39,7 +40,10 @@ class RiskScore(Base):
     """Safety Valve outputs"""
 
     __tablename__ = "risk_scores"
-    __table_args__ = {"schema": "analytics"}
+    __table_args__ = (
+        Index("ix_risk_scores_level", "risk_level"),
+        {"schema": "analytics"},
+    )
 
     user_hash = Column(String(64), primary_key=True)
     tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
@@ -59,9 +63,12 @@ class GraphEdge(Base):
     """Social graph for Culture Thermometer"""
 
     __tablename__ = "graph_edges"
-    __table_args__ = {"schema": "analytics"}
+    __table_args__ = (
+        Index("ix_graph_edges_tenant", "tenant_id"),
+        {"schema": "analytics"},
+    )
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
     tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     source_hash = Column(String(64), index=True)
     target_hash = Column(String(64), index=True)
@@ -94,7 +101,7 @@ class RiskHistory(Base):
         {"schema": "analytics"},
     )
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
     user_hash = Column(String(64), index=True)
     tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     risk_level = Column(String(20))

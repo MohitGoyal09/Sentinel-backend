@@ -147,12 +147,10 @@ async def sso_callback(
     try:
         supabase = get_supabase_admin_client()
         # Generate a magic link or sign in the user
-        # For demo: return user info and let frontend handle session
+        # For demo: return user_hash and provider only (no PII)
         return success_response(
             {
                 "user_hash": user_hash,
-                "email": user_info.email,
-                "name": user_info.name,
                 "provider": provider,
                 "message": "SSO authentication successful. Use /auth/login with credentials or Supabase magic link to complete session.",
             }
@@ -162,8 +160,6 @@ async def sso_callback(
         return success_response(
             {
                 "user_hash": user_hash,
-                "email": user_info.email,
-                "name": user_info.name,
                 "provider": provider,
                 "message": "SSO authentication successful.",
             }

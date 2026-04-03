@@ -1,18 +1,21 @@
 import json
 import asyncio
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query as QueryParam, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import AsyncGenerator, Optional, List, Dict, Any
 
 from app.core.database import get_db
 from app.models.analytics import RiskScore, Event, RiskHistory, CentralityScore
 from app.models.identity import UserIdentity
-from app.api.deps.auth import get_current_user_identity, require_role
+from app.models.tenant import TenantMember
+from app.api.deps.auth import get_current_user_identity, get_tenant_member, require_role
 from app.services.llm import llm_service
 from app.services.sentinel_chat import sentinel_chat_service
+from app.services.chat_history_service import ChatHistoryService
+from app.models.chat_history import ChatSession
 from app.services.permission_service import PermissionService
 from app.schemas.ai import (
     ChatRequest,
@@ -39,7 +42,7 @@ router = APIRouter()
 async def get_team_narrative_alias(
     team_hash: str,
     days: int = 30,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    member: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -47,7 +50,7 @@ async def get_team_narrative_alias(
     Provides aggregated team insights with privacy protection.
     """
     return await generate_team_narrative_report(
-        team_hash=team_hash, days=days, current_user=current_user, db=db
+        team_hash=team_hash, days=days, member=member, db=db
     )
 
 
@@ -207,14 +210,14 @@ def apply_role_filter(db: Session, user_role: str, results: List[dict]) -> List[
                 r_filtered = {
                     k: v
                     for k, v in r.items()
-                    if k not in ["email", "slack_id", "manager_hash"]
+                    if k not in ["email", "slack_id", "team_id"]
                 }
                 filtered.append(r_filtered)
             elif r.get("risk_level") == "CRITICAL":
                 r_filtered = {
                     k: v
                     for k, v in r.items()
-                    if k not in ["email", "slack_id", "manager_hash"]
+                    if k not in ["email", "slack_id", "team_id"]
                 }
                 filtered.append(r_filtered)
         return filtered
@@ -223,23 +226,39 @@ def apply_role_filter(db: Session, user_role: str, results: List[dict]) -> List[
 
 
 def execute_semantic_query(
-    db: Session, intent: dict, user_role: str, current_user_hash: str
+    db: Session, intent: dict, user_role: str, current_user_hash: str,
+    tenant_id: str = None,
 ) -> List[dict]:
     """
     Execute query based on parsed intent.
     Returns list of user data matching filters.
+    Scoped to the caller's tenant when tenant_id is provided.
     """
+    # Build set of tenant-scoped user hashes for filtering
+    tenant_hashes: set | None = None
+    if tenant_id:
+        tenant_hashes = {
+            tm.user_hash
+            for tm in db.query(TenantMember.user_hash).filter_by(
+                tenant_id=tenant_id
+            ).all()
+        }
+
     results = []
 
     if intent["query_type"] == "at_risk":
         risk_levels = intent["filters"].get("risk_level", ["ELEVATED", "CRITICAL"])
-        users = db.query(RiskScore).filter(RiskScore.risk_level.in_(risk_levels)).all()
+        query = db.query(RiskScore).filter(RiskScore.risk_level.in_(risk_levels))
+        if tenant_hashes is not None:
+            query = query.filter(RiskScore.user_hash.in_(tenant_hashes))
+        users = query.all()
 
         for u in users:
             identity = db.query(UserIdentity).filter_by(user_hash=u.user_hash).first()
             centrality = (
                 db.query(CentralityScore).filter_by(user_hash=u.user_hash).first()
             )
+            tm = db.query(TenantMember).filter_by(user_hash=u.user_hash).first()
 
             results.append(
                 {
@@ -251,20 +270,28 @@ def execute_semantic_query(
                     "consent_share_with_manager": identity.consent_share_with_manager
                     if identity
                     else False,
-                    "manager_hash": identity.manager_hash if identity else None,
+                    "team_id": str(tm.team_id) if tm and tm.team_id else None,
                 }
             )
 
     elif intent["query_type"] == "not_burned_with_skill":
-        users = (
-            db.query(RiskScore)
-            .filter(RiskScore.risk_level.in_(["LOW", "ELEVATED"]))
-            .all()
+        not_burned_query = db.query(RiskScore).filter(
+            RiskScore.risk_level.in_(["LOW", "ELEVATED"])
         )
+        if tenant_hashes is not None:
+            not_burned_query = not_burned_query.filter(
+                RiskScore.user_hash.in_(tenant_hashes)
+            )
+        users = not_burned_query.all()
 
-        centrality_users = (
-            db.query(CentralityScore).filter(CentralityScore.betweenness > 0.2).all()
+        centrality_query = db.query(CentralityScore).filter(
+            CentralityScore.betweenness > 0.2
         )
+        if tenant_hashes is not None:
+            centrality_query = centrality_query.filter(
+                CentralityScore.user_hash.in_(tenant_hashes)
+            )
+        centrality_users = centrality_query.all()
 
         centrality_hashes = {c.user_hash for c in centrality_users}
 
@@ -276,6 +303,7 @@ def execute_semantic_query(
                 centrality = (
                     db.query(CentralityScore).filter_by(user_hash=u.user_hash).first()
                 )
+                tm = db.query(TenantMember).filter_by(user_hash=u.user_hash).first()
 
                 results.append(
                     {
@@ -290,7 +318,7 @@ def execute_semantic_query(
                         "consent_share_with_manager": identity.consent_share_with_manager
                         if identity
                         else False,
-                        "manager_hash": identity.manager_hash if identity else None,
+                        "team_id": str(tm.team_id) if tm and tm.team_id else None,
                     }
                 )
 
@@ -298,18 +326,20 @@ def execute_semantic_query(
         min_betweenness = intent["filters"].get("min_betweenness", 0.3)
         min_unblocking = intent["filters"].get("min_unblocking", 5)
 
-        users = (
-            db.query(CentralityScore)
-            .filter(
-                CentralityScore.betweenness >= min_betweenness,
-                CentralityScore.unblocking_count >= min_unblocking,
-            )
-            .all()
+        gems_query = db.query(CentralityScore).filter(
+            CentralityScore.betweenness >= min_betweenness,
+            CentralityScore.unblocking_count >= min_unblocking,
         )
+        if tenant_hashes is not None:
+            gems_query = gems_query.filter(
+                CentralityScore.user_hash.in_(tenant_hashes)
+            )
+        users = gems_query.all()
 
         for c in users:
             risk = db.query(RiskScore).filter_by(user_hash=c.user_hash).first()
             identity = db.query(UserIdentity).filter_by(user_hash=c.user_hash).first()
+            tm = db.query(TenantMember).filter_by(user_hash=c.user_hash).first()
 
             results.append(
                 {
@@ -322,22 +352,26 @@ def execute_semantic_query(
                     "consent_share_with_manager": identity.consent_share_with_manager
                     if identity
                     else False,
-                    "manager_hash": identity.manager_hash if identity else None,
+                    "team_id": str(tm.team_id) if tm and tm.team_id else None,
                 }
             )
 
     elif intent["query_type"] == "flight_risk":
-        users = (
-            db.query(RiskScore)
-            .filter(RiskScore.risk_level.in_(["ELEVATED", "CRITICAL"]))
-            .all()
+        flight_query = db.query(RiskScore).filter(
+            RiskScore.risk_level.in_(["ELEVATED", "CRITICAL"])
         )
+        if tenant_hashes is not None:
+            flight_query = flight_query.filter(
+                RiskScore.user_hash.in_(tenant_hashes)
+            )
+        users = flight_query.all()
 
         for u in users:
             identity = db.query(UserIdentity).filter_by(user_hash=u.user_hash).first()
             centrality = (
                 db.query(CentralityScore).filter_by(user_hash=u.user_hash).first()
             )
+            tm = db.query(TenantMember).filter_by(user_hash=u.user_hash).first()
 
             results.append(
                 {
@@ -352,18 +386,24 @@ def execute_semantic_query(
                     "consent_share_with_manager": identity.consent_share_with_manager
                     if identity
                     else False,
-                    "manager_hash": identity.manager_hash if identity else None,
+                    "team_id": str(tm.team_id) if tm and tm.team_id else None,
                 }
             )
 
     else:
-        users = db.query(RiskScore).all()
+        general_query = db.query(RiskScore)
+        if tenant_hashes is not None:
+            general_query = general_query.filter(
+                RiskScore.user_hash.in_(tenant_hashes)
+            )
+        users = general_query.all()
 
         for u in users:
             identity = db.query(UserIdentity).filter_by(user_hash=u.user_hash).first()
             centrality = (
                 db.query(CentralityScore).filter_by(user_hash=u.user_hash).first()
             )
+            tm = db.query(TenantMember).filter_by(user_hash=u.user_hash).first()
 
             results.append(
                 {
@@ -375,7 +415,7 @@ def execute_semantic_query(
                     "consent_share_with_manager": identity.consent_share_with_manager
                     if identity
                     else False,
-                    "manager_hash": identity.manager_hash if identity else None,
+                    "team_id": str(tm.team_id) if tm and tm.team_id else None,
                 }
             )
 
@@ -472,6 +512,7 @@ def get_risk_narrative_data(db: Session, user_hash: str, time_range: int = 30) -
         db.query(Event)
         .filter(Event.user_hash == user_hash, Event.timestamp >= start_date)
         .order_by(Event.timestamp.desc())
+        .limit(500)
         .all()
     )
 
@@ -583,18 +624,61 @@ Respond in JSON format:
 
 
 def get_team_narrative_data(db: Session, team_hash: str, days: int = 30) -> dict:
-    """Fetch team data for narrative generation with privacy protection"""
-    from app.models.identity import UserIdentity
+    """Fetch team data for narrative generation with privacy protection.
 
-    team_members = db.query(UserIdentity).filter_by(manager_hash=team_hash).all()
+    team_hash may be either a Team.id (UUID string) or a user_hash that belongs
+    to a TenantMember whose team we should look up.
+    """
+    import uuid as _uuid
+    from app.models.tenant import TenantMember as _TenantMember
+    from app.models.team import Team as _Team
 
-    if not team_members:
-        team_members = db.query(UserIdentity).filter_by(user_hash=team_hash).all()
-        if team_members and team_members[0].manager_hash:
-            team_hash = team_members[0].manager_hash
-            team_members = (
-                db.query(UserIdentity).filter_by(manager_hash=team_hash).all()
+    # Attempt to resolve team_hash to a set of member user_hashes via TenantMember
+    resolved_member_hashes: list[str] = []
+
+    # Try interpreting team_hash as a Team UUID first
+    try:
+        team_uuid = _uuid.UUID(team_hash)
+        tenant_members = (
+            db.query(_TenantMember.user_hash)
+            .filter_by(team_id=team_uuid)
+            .all()
+        )
+        resolved_member_hashes = [tm.user_hash for tm in tenant_members]
+    except (ValueError, AttributeError):
+        pass
+
+    # If no members found via UUID, fall back: treat team_hash as a user_hash and
+    # look up that user's team, then fetch all members of that team.
+    if not resolved_member_hashes:
+        source_member = (
+            db.query(_TenantMember)
+            .filter_by(user_hash=team_hash)
+            .first()
+        )
+        if source_member and source_member.team_id:
+            tenant_members = (
+                db.query(_TenantMember.user_hash)
+                .filter_by(
+                    team_id=source_member.team_id,
+                    tenant_id=source_member.tenant_id,
+                )
+                .all()
             )
+            resolved_member_hashes = [tm.user_hash for tm in tenant_members]
+            team_hash = str(source_member.team_id)
+
+    if not resolved_member_hashes:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No team found with id {team_hash}",
+        )
+
+    team_members = (
+        db.query(UserIdentity)
+        .filter(UserIdentity.user_hash.in_(resolved_member_hashes))
+        .all()
+    )
 
     if not team_members:
         raise HTTPException(
@@ -696,7 +780,7 @@ Respond in JSON format:
 async def generate_risk_report(
     user_hash: str,
     time_range: int = 30,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
@@ -709,13 +793,19 @@ async def generate_risk_report(
     Applies privacy filters automatically.
     """
     # Permission check
-    if current_user.role == "employee":
-        if current_user.user_hash != user_hash:
+    if member.role == "employee":
+        if member.user_hash != user_hash:
             raise HTTPException(status_code=403, detail="Employees can only view their own risk report")
-    elif current_user.role == "manager":
-        target = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
-        if target and current_user.user_hash != user_hash and target.manager_hash != current_user.user_hash:
-            raise HTTPException(status_code=403, detail="Managers can only view risk reports for their team")
+    elif member.role == "manager":
+        # Managers can only view risk reports for members on the same team
+        if member.user_hash != user_hash:
+            target_member = (
+                db.query(TenantMember)
+                .filter_by(user_hash=user_hash, tenant_id=member.tenant_id)
+                .first()
+            )
+            if not target_member or target_member.team_id != member.team_id:
+                raise HTTPException(status_code=403, detail="Managers can only view risk reports for their team")
     # admin: can view anyone
 
     try:
@@ -778,7 +868,7 @@ async def generate_risk_report(
 async def generate_team_report(
     team_hash: str,
     days: int = 30,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    member: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -862,7 +952,7 @@ async def generate_team_report(
 @router.post("/copilot/agenda", response_model=AgendaResponse)
 async def generate_agenda(
     request: AgendaRequest,
-    current_user: UserIdentity = Depends(require_role("manager", "admin")),
+    member: TenantMember = Depends(require_role("manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -948,7 +1038,7 @@ async def generate_agenda(
 @router.post("/query", response_model=QueryResponse)
 async def semantic_query(
     request: QueryRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
@@ -963,7 +1053,7 @@ async def semantic_query(
     Applies role-based privacy filters automatically.
     """
     query = request.query
-    user_role = current_user.role
+    user_role = member.role
 
     intent = parse_query_intent(query)
 
@@ -971,7 +1061,8 @@ async def semantic_query(
         db=db,
         intent=intent,
         user_role=user_role,
-        current_user_hash=current_user.user_hash,
+        current_user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
     )
 
     prompt = build_query_response_prompt(query, results, intent["query_type"])
@@ -1030,75 +1121,17 @@ async def semantic_query(
     )
 
 
-# Role-aware system prompts for chat
-ROLE_SYSTEM_PROMPTS = {
-    "employee": """You are a supportive AI wellbeing companion for employees.
-
-Your focus areas:
-- Personal wellbeing and work-life balance
-- Career growth and skill development
-- Preparation for 1:1 conversations with managers
-- Understanding personal work patterns and stress indicators
-- Self-care recommendations and resources
-
-Guidelines:
-- Be encouraging and non-judgmental
-- Focus on personal agency and control
-- Provide actionable self-improvement suggestions
-- Help interpret personal metrics in a positive light
-- Suggest concrete steps for career development
-- Never use surveillance or monitoring language
-- Frame everything as self-discovery and growth
-
-Tone: Supportive, empowering, personal growth focused""",
-    "manager": """You are a management insights assistant focused on team health and performance.
-
-Your focus areas:
-- Team risk analysis and early warning indicators
-- Individual team member support strategies
-- Workload distribution and balance
-- Team collaboration patterns and blockers
-- 1:1 preparation and talking points
-- Retention risk identification
-
-Guidelines:
-- Frame insights as opportunities for support, not criticism
-- Respect privacy and consent boundaries
-- Focus on actionable managerial interventions
-- Balance team needs with individual care
-- Provide context about when to escalate concerns
-- Emphasize proactive leadership and team building
-- Never frame data as surveillance
-
-Tone: Professional, supportive, leadership focused""",
-    "admin": """You are an organizational analytics assistant for HR and leadership.
-
-Your focus areas:
-- Organization-wide wellbeing trends
-- Department-level risk aggregation
-- Policy effectiveness and impact
-- Resource allocation recommendations
-- Compliance and audit insights
-- Strategic workforce planning
-
-Guidelines:
-- Provide high-level strategic insights
-- Focus on patterns across groups, not individuals
-- Suggest policy and process improvements
-- Identify systemic issues and opportunities
-- Maintain strict privacy in all aggregations
-- Support data-driven decision making
-- Balance organizational needs with employee welfare
-
-Tone: Strategic, analytical, organizational focus""",
-}
+# Import shared prompts — avoid duplication with sentinel_chat.py
+from app.services.sentinel_chat import ROLE_SYSTEM_PROMPTS
 
 
 def get_user_context_data(db: Session, user_hash: str) -> dict:
     """Fetch relevant context data for chat based on user's role and data."""
     risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
-    identity = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+    tenant_member = db.query(TenantMember).filter_by(user_hash=user_hash).first()
     centrality = db.query(CentralityScore).filter_by(user_hash=user_hash).first()
+
+    member_role = tenant_member.role if tenant_member else "employee"
 
     context = {
         "user_hash": user_hash,
@@ -1106,19 +1139,26 @@ def get_user_context_data(db: Session, user_hash: str) -> dict:
         "velocity": risk_score.velocity if risk_score else 0.0,
         "belongingness": risk_score.thwarted_belongingness if risk_score else 0.5,
         "confidence": risk_score.confidence if risk_score else 0.0,
-        "role": identity.role if identity else "employee",
+        "role": member_role,
         "betweenness": centrality.betweenness if centrality else 0.0,
         "eigenvector": centrality.eigenvector if centrality else 0.0,
         "unblocking_count": centrality.unblocking_count if centrality else 0,
     }
 
     # Add team context for managers
-    if identity and identity.role == "manager":
-        team_members = db.query(UserIdentity).filter_by(manager_hash=user_hash).all()
-        if team_members:
-            member_hashes = [m.user_hash for m in team_members]
+    if tenant_member and member_role == "manager" and tenant_member.team_id:
+        team_member_hashes = [
+            tm.user_hash
+            for tm in db.query(TenantMember.user_hash).filter_by(
+                team_id=tenant_member.team_id,
+                tenant_id=tenant_member.tenant_id,
+            ).all()
+        ]
+        if team_member_hashes:
             team_risks = (
-                db.query(RiskScore).filter(RiskScore.user_hash.in_(member_hashes)).all()
+                db.query(RiskScore)
+                .filter(RiskScore.user_hash.in_(team_member_hashes))
+                .all()
             )
 
             at_risk_count = sum(
@@ -1126,13 +1166,23 @@ def get_user_context_data(db: Session, user_hash: str) -> dict:
             )
             critical_count = sum(1 for r in team_risks if r.risk_level == "CRITICAL")
 
-            context["team_size"] = len(team_members)
+            context["team_size"] = len(team_member_hashes)
             context["team_at_risk_count"] = at_risk_count
             context["team_critical_count"] = critical_count
 
     # Add organization context for admins
-    if identity and identity.role == "admin":
-        all_risks = db.query(RiskScore).all()
+    if member_role == "admin":
+        tenant_hashes = {
+            tm.user_hash
+            for tm in db.query(TenantMember.user_hash)
+            .filter_by(tenant_id=tenant_member.tenant_id)
+            .all()
+        }
+        all_risks = (
+            db.query(RiskScore)
+            .filter(RiskScore.user_hash.in_(tenant_hashes))
+            .all()
+        )
         total_users = len(all_risks)
         org_at_risk = sum(
             1 for r in all_risks if r.risk_level in ["ELEVATED", "CRITICAL"]
@@ -1207,19 +1257,90 @@ def format_context_for_role(context: dict, role: str) -> str:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
     Role-aware AI chat endpoint (Ask Sentinel).
-    Delegates to SentinelChatService for context gathering and LLM response.
+
+    Delegates to SentinelChatService which runs the full pipeline:
+    refusal check -> workflow intent -> data boundary -> LLM.
+    Persists both user and assistant turns to ChatHistory after response.
     """
+    # Build a lightweight UserIdentity-like object from the member's data
+    current_user = (
+        db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
+    )
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User identity not found",
+        )
+
+    tenant_id = str(member.tenant_id)
+
     try:
-        return await sentinel_chat_service.respond(request, current_user, db)
+        # Resolve or create session; map session_id -> conversation_id so the
+        # chat service pipeline stays unchanged.
+        chat_history_svc = ChatHistoryService(db)
+        if request.session_id:
+            session = chat_history_svc.get_session(
+                member.user_hash, tenant_id, request.session_id
+            )
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            effective_session_id = request.session_id
+        else:
+            session = chat_history_svc.create_session(
+                user_hash=member.user_hash,
+                tenant_id=tenant_id,
+                title="Untitled Chat",
+            )
+            db.flush()
+            db.commit()  # Fix C1: commit session immediately so it's durable
+            effective_session_id = str(session.id)
+
+        # Create a copy with conversation_id set (Fix H3: don't mutate the original)
+        effective_request = request.model_copy(update={"conversation_id": effective_session_id})
+
+        result = await sentinel_chat_service.respond(
+            effective_request, current_user, tenant_id, db
+        )
+
+        # Persist turns if we got an actual response (Fix H4: don't use risk_level heuristic)
+        conversation_id = result.conversation_id or effective_session_id
+        if result.response:
+            chat_history_svc.persist_turn(
+                member.user_hash, tenant_id, conversation_id, "user", request.message,
+            )
+            chat_history_svc.persist_turn(
+                member.user_hash, tenant_id, conversation_id, "assistant", result.response,
+                metadata={"role": result.role},
+            )
+            db.commit()
+
+            # Auto-title (Fix C1: run in thread to avoid blocking event loop)
+            # Fix H2: remove stale ORM guard, let service method decide
+            import asyncio
+            try:
+                await asyncio.to_thread(
+                    chat_history_svc.auto_title_session,
+                    member.user_hash, tenant_id, effective_session_id, effective_request.message,
+                )
+                db.commit()
+            except Exception:
+                pass  # Non-critical, don't break the response
+
+        # Attach session_id to response so the frontend can store it
+        result.conversation_id = effective_session_id
+        return result
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error processing chat request for %s: %s", current_user.user_hash, e, exc_info=True)
+        logger.error(
+            "Error processing chat request for %s: %s",
+            member.user_hash, e, exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to process request. Please try again.",
@@ -1267,15 +1388,108 @@ async def submit_chat_feedback(
 @router.post("/chat/stream")
 async def chat_stream(
     request: ChatRequest,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
     Streaming version of Ask Sentinel. Returns Server-Sent Events.
+
+    Wraps the stream to accumulate the full response text and persist
+    both user and assistant turns to ChatHistory after completion.
     """
+    current_user = (
+        db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
+    )
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User identity not found",
+        )
+
+    tenant_id = str(member.tenant_id)
+
+    # Resolve or create session before the stream starts so we can embed
+    # session_id in the SSE 'done' event for the frontend to pick up.
+    chat_history_svc = ChatHistoryService(db)
+    if request.session_id:
+        _session = chat_history_svc.get_session(
+            member.user_hash, tenant_id, request.session_id
+        )
+        if not _session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        effective_session_id = request.session_id
+    else:
+        _session = chat_history_svc.create_session(
+            user_hash=member.user_hash,
+            tenant_id=tenant_id,
+            title="Untitled Chat",
+        )
+        db.flush()
+        db.commit()
+        effective_session_id = str(_session.id)
+
+    # Create a copy with conversation_id set (Fix H3: don't mutate the original)
+    effective_request = request.model_copy(update={"conversation_id": effective_session_id})
+
+    async def _stream_and_persist() -> AsyncGenerator[str, None]:
+        """Wrap the inner stream to capture accumulated text for persistence."""
+        accumulated_response: list[str] = []
+        conversation_id: Optional[str] = None
+
+        async for chunk in sentinel_chat_service.respond_stream(
+            effective_request, current_user, tenant_id, db
+        ):
+            # Rewrite the 'done' event to include session_id
+            try:
+                if chunk.startswith("data: "):
+                    payload = json.loads(chunk[6:].strip())
+                    event_type = payload.get("type")
+                    if event_type == "token":
+                        accumulated_response.append(payload.get("content", ""))
+                    elif event_type == "done":
+                        conversation_id = payload.get("conversation_id")
+                        payload["session_id"] = effective_session_id
+                        chunk = f"data: {json.dumps(payload)}\n\n"
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+            yield chunk
+
+        # After stream completes, persist both turns.
+        # Always persist the user turn if we have a conversation_id,
+        # even if the LLM errored (so the user message is not lost).
+        full_response = "".join(accumulated_response)
+        resolved_conv_id = conversation_id or effective_session_id
+        if resolved_conv_id:
+            try:
+                chat_history_svc.persist_turn(
+                    member.user_hash, tenant_id, resolved_conv_id,
+                    "user", request.message,
+                )
+                if full_response:
+                    chat_history_svc.persist_turn(
+                        member.user_hash, tenant_id, resolved_conv_id,
+                        "assistant", full_response,
+                        metadata={"role": member.role},
+                    )
+                db.commit()
+
+                # Auto-title after first message (runs sync — acceptable in stream cleanup)
+                try:
+                    chat_history_svc.auto_title_session(
+                        member.user_hash, tenant_id, effective_session_id, effective_request.message
+                    )
+                    db.commit()
+                except Exception:
+                    pass  # Non-critical, don't break the stream
+            except Exception as persist_err:
+                logger.error(
+                    "Failed to persist chat turns: %s", persist_err, exc_info=True,
+                )
+
     try:
         return StreamingResponse(
-            sentinel_chat_service.respond_stream(request, current_user, db),
+            _stream_and_persist(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1286,8 +1500,253 @@ async def chat_stream(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error processing streaming chat request for %s: %s", current_user.user_hash, e, exc_info=True)
+        logger.error(
+            "Error processing streaming chat request for %s: %s",
+            member.user_hash, e, exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to process request. Please try again.",
         )
+
+
+# ------------------------------------------------------------------
+# Chat History endpoints (Task 8)
+# ------------------------------------------------------------------
+
+
+@router.get("/chat/history")
+def get_chat_history(
+    limit: int = QueryParam(default=20, le=50),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Get user's conversation list (most recent first)."""
+    service = ChatHistoryService(db)
+    conversations = service.get_conversations(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        limit=limit,
+    )
+    return {"conversations": conversations}
+
+
+@router.get("/chat/history/{conversation_id}")
+def get_conversation_turns(
+    conversation_id: str,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Get all turns for a specific conversation."""
+    service = ChatHistoryService(db)
+    turns = service.get_conversation_turns(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        conversation_id=conversation_id,
+    )
+    if not turns:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Serialize turns for JSON response
+    serialized_turns = [
+        {
+            "id": turn.id,
+            "role": turn.role,
+            "content": turn.content,
+            "created_at": turn.created_at.isoformat() if turn.created_at else None,
+            "metadata": turn.metadata_,
+        }
+        for turn in turns
+    ]
+    return {"conversation_id": conversation_id, "turns": serialized_turns}
+
+
+# ------------------------------------------------------------------
+# Chat Session CRUD endpoints (Task A3)
+# ------------------------------------------------------------------
+
+
+@router.post("/chat/sessions")
+def create_chat_session(
+    body: dict,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Create a new named chat session.
+
+    Body fields:
+    - title (str, optional): Display name for the session. Defaults to "Untitled Chat".
+    """
+    raw_title = body.get("title", "Untitled Chat")
+    title = str(raw_title).strip()[:255] or "Untitled Chat"
+
+    service = ChatHistoryService(db)
+    session = service.create_session(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        title=title,
+    )
+    db.commit()
+    return {
+        "id": session.id,
+        "title": session.title,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+    }
+
+
+@router.get("/chat/sessions")
+def list_chat_sessions(
+    limit: int = QueryParam(default=20, ge=1, le=50),
+    offset: int = QueryParam(default=0, ge=0),
+    search: Optional[str] = QueryParam(default=None),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Return a paginated list of active sessions for the authenticated user.
+
+    Query parameters:
+    - limit  (int, 1-50): Number of sessions per page. Default: 20.
+    - offset (int, >=0):  Sessions to skip. Default: 0.
+    - search (str):       Case-insensitive substring filter on title.
+    """
+    service = ChatHistoryService(db)
+    sessions = service.get_sessions(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+    return {
+        "sessions": [
+            {
+                "id": s.id,
+                "title": s.title,
+                "is_favorite": s.is_favorite,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            }
+            for s in sessions
+        ]
+    }
+
+
+@router.get("/chat/sessions/{session_id}")
+def get_chat_session(
+    session_id: str,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Return a single session with its full message history."""
+    service = ChatHistoryService(db)
+    session = service.get_session(
+        member.user_hash, str(member.tenant_id), session_id
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    turns = service.get_conversation_turns(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        conversation_id=session_id,
+    )
+
+    return {
+        "id": session.id,
+        "title": session.title,
+        "is_favorite": session.is_favorite,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        "turns": [
+            {
+                "id": t.id,
+                "role": t.role,
+                "content": t.content,
+                "type": getattr(t, "type", "message") or "message",
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "metadata": t.metadata_,
+            }
+            for t in turns
+        ],
+    }
+
+
+@router.put("/chat/sessions/{session_id}")
+def rename_chat_session(
+    session_id: str,
+    body: dict,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Rename an existing chat session.
+
+    Body fields:
+    - title (str, required): New display name for the session.
+    """
+    raw_title = body.get("title", "")
+    title = str(raw_title).strip()[:255]
+    if not title:
+        raise HTTPException(status_code=422, detail="title must not be empty")
+
+    service = ChatHistoryService(db)
+    session = service.rename_session(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        session_id=session_id,
+        title=title,
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    db.commit()
+    return {
+        "id": session.id,
+        "title": session.title,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+    }
+
+
+@router.delete("/chat/sessions/{session_id}")
+def delete_chat_session(
+    session_id: str,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete a chat session (sets is_active=False).
+
+    The underlying message history is preserved for audit purposes.
+    """
+    service = ChatHistoryService(db)
+    deleted = service.delete_session(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        session_id=session_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    db.commit()
+    return {"status": "deleted", "session_id": session_id}
+
+
+@router.post("/chat/sessions/{session_id}/favorite")
+def toggle_session_favorite(
+    session_id: str,
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Toggle the favorite/pin flag on a chat session."""
+    service = ChatHistoryService(db)
+    session = service.toggle_favorite(
+        user_hash=member.user_hash,
+        tenant_id=str(member.tenant_id),
+        session_id=session_id,
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    db.commit()
+    return {
+        "id": session.id,
+        "is_favorite": session.is_favorite,
+    }

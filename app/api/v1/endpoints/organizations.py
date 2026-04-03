@@ -91,37 +91,26 @@ async def update_org_settings(
 
 @router.get("/stats")
 async def get_org_stats(
-    user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """Get organization statistics for the dashboard."""
-    # Get user's primary tenant
-    membership = db.query(TenantMember).filter_by(user_hash=user.user_hash).first()
+    tenant_id = member.tenant_id
 
-    if not membership:
-        return success_response(
-            {
-                "total_users": 0,
-                "active_users": 0,
-                "total_teams": 0,
-                "admin_count": 0,
-            }
-        )
-
-    # Count stats
-    total_users = db.query(UserIdentity).count()
-    admin_count = db.query(UserIdentity).filter_by(role="admin").count()
-    manager_count = db.query(UserIdentity).filter_by(role="manager").count()
-
-    # Get tenant member count
-    tenant_members = (
-        db.query(TenantMember).filter_by(tenant_id=membership.tenant_id).count()
+    # Count stats scoped to tenant via TenantMember
+    tenant_members_query = db.query(TenantMember).filter_by(tenant_id=tenant_id)
+    total_users = tenant_members_query.count()
+    admin_count = tenant_members_query.filter_by(role="admin").count()
+    manager_count = (
+        db.query(TenantMember)
+        .filter_by(tenant_id=tenant_id, role="manager")
+        .count()
     )
 
     return success_response(
         {
             "total_users": total_users,
-            "tenant_members": tenant_members,
+            "tenant_members": total_users,
             "admin_count": admin_count,
             "manager_count": manager_count,
             "employee_count": total_users - admin_count - manager_count,

@@ -17,8 +17,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.api.deps.auth import get_current_user_identity
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user_identity, get_tenant_member
+from app.core.database import get_db
 from app.models.identity import UserIdentity
+from app.models.tenant import TenantMember
+from app.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger("sentinel.api.workflows")
 
@@ -174,6 +179,7 @@ async def get_workflows(
 async def create_workflow(
     workflow: WorkflowCreate,
     current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
 ):
     """
     Create a new automated workflow.
@@ -218,6 +224,15 @@ async def create_workflow(
     workflows[wf_id] = new_workflow
 
     logger.info(f"Workflow created: id={wf_id} trigger={workflow.trigger} owner={owner}")
+
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=current_user.user_hash,
+        actor_role="employee",
+        action=AuditAction.WORKFLOW_CREATED,
+        details={"workflow_name": workflow.name, "trigger": workflow.trigger},
+    )
+    db.commit()
 
     return _workflow_to_dict(new_workflow)
 
@@ -280,3 +295,49 @@ async def delete_workflow(
     logger.info(f"Workflow deleted: id={workflow_id} owner={owner}")
 
     return {"deleted": True, "workflow_id": workflow_id}
+
+
+@router.post("/{workflow_id}/execute")
+async def execute_workflow(
+    workflow_id: str,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Execute an existing workflow.
+
+    Validates that the workflow exists for the current user, logs the execution,
+    and returns success.
+    """
+    owner = _owner_key(current_user)
+    workflows = _ensure_store_for(owner)
+
+    if workflow_id not in workflows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found.",
+        )
+
+    wf = workflows[workflow_id]
+
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=current_user.user_hash,
+        actor_role="employee",
+        action=AuditAction.WORKFLOW_EXECUTED,
+        details={
+            "workflow_id": workflow_id,
+            "workflow_name": wf["name"],
+            "trigger": wf["trigger"],
+        },
+    )
+    db.commit()
+
+    logger.info(f"Workflow executed: id={workflow_id} owner={owner}")
+
+    return {
+        "success": True,
+        "workflow_id": workflow_id,
+        "workflow_name": wf["name"],
+        "message": "Workflow executed successfully.",
+    }

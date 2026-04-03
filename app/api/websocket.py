@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.services.websocket_manager import manager
 from app.api.deps import get_db
 from app.models.identity import UserIdentity
+from app.models.tenant import TenantMember
 from app.core.supabase import get_supabase_client
 from datetime import datetime
 
@@ -38,6 +39,17 @@ async def personal_dashboard_ws(
             return
     except Exception:
         await websocket.close(code=4001, reason="Authentication failed")
+        return
+
+    # Verify the authenticated user's hash matches the URL path user_hash
+    authenticated_user_hash = privacy.hash_identity(user.user.email)
+    if user_hash != "global" and authenticated_user_hash != user_hash:
+        logger.warning(
+            "WS user_hash mismatch: authenticated=%s, requested=%s",
+            authenticated_user_hash[:8],
+            user_hash[:8],
+        )
+        await websocket.close(code=4003, reason="User hash mismatch")
         return
 
     # Validate user_hash
@@ -115,10 +127,10 @@ async def admin_dashboard_ws(websocket: WebSocket, db: Session = Depends(get_db)
         if not auth_user or not auth_user.user:
             await websocket.close(code=4001, reason="Invalid token")
             return
-        # Verify admin role
+        # Verify admin role via TenantMember
         user_hash = privacy.hash_identity(auth_user.user.email)
-        identity = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
-        if not identity or identity.role != "admin":
+        member = db.query(TenantMember).filter_by(user_hash=user_hash, role="admin").first()
+        if not member:
             await websocket.close(code=4003, reason="Admin access required")
             return
     except Exception:

@@ -16,10 +16,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.api.deps import get_db
-from app.api.deps.auth import get_current_user_identity, require_role
+from app.api.deps.auth import get_current_user_identity, require_role, get_tenant_member
 from app.core.security import privacy
 from app.models.analytics import Event
 from app.models.identity import UserIdentity
+from app.models.tenant import TenantMember
+from app.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger("sentinel.ingestion_api")
 router = APIRouter()
@@ -34,6 +36,13 @@ _pipeline_metrics = {
     "events_by_source": {},
     "recent_events": [],  # last 50 ingested events for live feed
     "pipeline_start_time": datetime.utcnow().isoformat(),
+    "stage_metrics": {
+        "Collection": {"processed": 0, "error_count": 0, "last_processed_at": None},
+        "Validation": {"processed": 0, "error_count": 0, "last_processed_at": None},
+        "Privacy Layer": {"processed": 0, "error_count": 0, "last_processed_at": None},
+        "Storage": {"processed": 0, "error_count": 0, "last_processed_at": None},
+        "Engine Processing": {"processed": 0, "error_count": 0, "last_processed_at": None},
+    },
 }
 
 EXPECTED_CSV_COLUMNS = {"timestamp", "user_email", "event_type", "source"}
@@ -57,6 +66,8 @@ class PipelineStage(BaseModel):
     name: str
     status: str  # active, idle, error
     processed: int = 0
+    error_count: int = 0
+    last_processed_at: Optional[str] = None
     description: str = ""
 
 
@@ -137,35 +148,46 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
         ),
     ]
 
+    sm = _pipeline_metrics["stage_metrics"]
     pipeline_stages = [
         PipelineStage(
             name="Collection",
             status="active",
             processed=total_events,
+            error_count=sm["Collection"]["error_count"],
+            last_processed_at=sm["Collection"]["last_processed_at"],
             description="Webhooks & API polling from connected sources",
         ),
         PipelineStage(
             name="Validation",
             status="active",
             processed=total_events,
+            error_count=sm["Validation"]["error_count"],
+            last_processed_at=sm["Validation"]["last_processed_at"],
             description="Schema validation, deduplication, timestamp normalization",
         ),
         PipelineStage(
             name="Privacy Layer",
             status="active",
             processed=total_users,
+            error_count=sm["Privacy Layer"]["error_count"],
+            last_processed_at=sm["Privacy Layer"]["last_processed_at"],
             description="HMAC hashing, AES-256 encryption, PII removal",
         ),
         PipelineStage(
             name="Storage",
             status="active",
             processed=total_events,
+            error_count=sm["Storage"]["error_count"],
+            last_processed_at=sm["Storage"]["last_processed_at"],
             description="Dual-vault architecture (Vault A: analytics, Vault B: identity)",
         ),
         PipelineStage(
             name="Engine Processing",
             status="active",
             processed=total_events,
+            error_count=sm["Engine Processing"]["error_count"],
+            last_processed_at=sm["Engine Processing"]["last_processed_at"],
             description="Safety Valve, Talent Scout, Culture Thermometer analysis",
         ),
     ]
@@ -304,6 +326,12 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
                 _pipeline_metrics["events_by_source"].get("csv", 0) + 1
             )
 
+            # Update per-stage metrics
+            now_iso = datetime.utcnow().isoformat()
+            for stage_name in ("Collection", "Validation", "Privacy Layer", "Storage"):
+                _pipeline_metrics["stage_metrics"][stage_name]["processed"] += 1
+                _pipeline_metrics["stage_metrics"][stage_name]["last_processed_at"] = now_iso
+
             # Add to recent events feed
             event_record = {
                 "id": f"csv-{i}-{int(time.time())}",
@@ -324,6 +352,7 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         except Exception as e:
             errors.append(f"Row {i}: {str(e)}")
             _pipeline_metrics["total_errors"] += 1
+            _pipeline_metrics["stage_metrics"]["Collection"]["error_count"] += 1
 
     # Commit all at once
     if ingested > 0:
@@ -332,6 +361,21 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=500, detail="Failed to persist events")
+
+    # Audit log for CSV upload
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=user.user_hash,
+        actor_role=user.role,
+        action=AuditAction.CSV_UPLOADED,
+        details={
+            "filename": file.filename,
+            "rows_ingested": ingested,
+            "rows_errored": len(errors),
+        },
+        tenant_id=user.tenant_id,
+    )
+    db.commit()
 
     return {
         "success": True,

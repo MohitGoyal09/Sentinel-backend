@@ -52,13 +52,16 @@ async def list_sessions(
     db: Session = Depends(get_db),
 ):
     """List active sessions for the current user (demo: returns user info)."""
+    primary_member = db.query(TenantMember).filter_by(user_hash=user.user_hash).first()
+    primary_role = primary_member.role if primary_member else "employee"
+
     return success_response(
         {
             "sessions": [
                 {
                     "id": "current",
                     "user_hash": user.user_hash,
-                    "role": user.role,
+                    "role": primary_role,
                     "created_at": user.created_at.isoformat()
                     if user.created_at
                     else None,

@@ -29,6 +29,9 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(
         None, description="Optional conversation ID for context continuity"
     )
+    session_id: Optional[str] = Field(
+        None, description="Optional session ID — takes precedence over conversation_id"
+    )
     context: Optional[Dict[str, Any]] = Field(
         None, description="Additional context data"
     )

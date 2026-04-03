@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-2.0-flash"
     llm_fallback_model: str = "gemini-1.5-flash"
 
+    # Direct LLM API keys (fallback when Portkey virtual keys are not configured)
+    llm_api_key: str = ""          # Groq API key for direct calls
+    gemini_api_key: str = ""       # Gemini API key for direct calls
+
     # Context API Keys
     pagerduty_api_key: str = ""
     jira_api_key: str = ""

@@ -55,22 +55,20 @@ def verify_encryption():
         for col_name, data_type in columns:
             print(f"  - {col_name}: {data_type}")
 
-        # Check for new RBAC columns
+        # Check for expected columns
         rbac_columns = [
-            "role",
             "consent_share_with_manager",
             "consent_share_anonymized",
             "monitoring_paused_until",
-            "manager_hash",
         ]
         existing_cols = [col[0] for col in columns]
 
         missing_cols = [col for col in rbac_columns if col not in existing_cols]
         if missing_cols:
-            print(f"\n[WARN] WARNING: Missing RBAC columns: {missing_cols}")
+            print(f"\n[WARN] WARNING: Missing expected columns: {missing_cols}")
             print("   Run migration: alembic upgrade head")
         else:
-            print("\n[OK] All RBAC columns present")
+            print("\n[OK] All expected columns present")
 
         # Check if there are any users
         result = conn.execute(text("SELECT COUNT(*) FROM identity.users"))

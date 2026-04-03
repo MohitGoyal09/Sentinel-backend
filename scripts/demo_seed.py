@@ -197,33 +197,9 @@ def seed_demo():
                 )
                 log.info(f"    [MEMBER] {u['email']} → {member_role}")
 
-        # Assign managers
+        # Compute hashes needed for audit log entries
         admin_hash = privacy.hash_identity("admin@sentinel.demo")
         manager1_hash = privacy.hash_identity("sarah.kim@sentinel.demo")
-        manager2_hash = privacy.hash_identity("jordan.smith@sentinel.demo")
-
-        # Sarah manages: Maria, Priya, David
-        for email in [
-            "maria.santos@sentinel.demo",
-            "priya.sharma@sentinel.demo",
-            "david.lee@sentinel.demo",
-        ]:
-            h = privacy.hash_identity(email)
-            user = db.query(UserIdentity).filter_by(user_hash=h).first()
-            if user:
-                user.manager_hash = manager1_hash
-
-        # Jordan manages: Emma, James, Lisa, Mike
-        for email in [
-            "emma.wilson@sentinel.demo",
-            "james.brown@sentinel.demo",
-            "lisa.chen@sentinel.demo",
-            "mike.johnson@sentinel.demo",
-        ]:
-            h = privacy.hash_identity(email)
-            user = db.query(UserIdentity).filter_by(user_hash=h).first()
-            if user:
-                user.manager_hash = manager2_hash
 
         # Create notifications for all users
         for user, user_data in created_users:

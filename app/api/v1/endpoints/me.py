@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
 from app.models.analytics import RiskScore, RiskHistory
+from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService, UserRole
 from app.schemas.engines import SafetyValveResponse
@@ -47,6 +48,10 @@ def get_my_profile(
     # Get current risk score
     risk_score = db.query(RiskScore).filter_by(user_hash=current_user.user_hash).first()
 
+    # Get user's primary role from TenantMember
+    primary_member = db.query(TenantMember).filter_by(user_hash=current_user.user_hash).first()
+    primary_role = primary_member.role if primary_member else "employee"
+
     # Get recent audit trail (last 30 days)
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
     audit_logs = (
@@ -74,7 +79,7 @@ def get_my_profile(
     return {
         "user": {
             "user_hash": current_user.user_hash,
-            "role": current_user.role,
+            "role": primary_role,
             "consent_share_with_manager": current_user.consent_share_with_manager,
             "consent_share_anonymized": current_user.consent_share_anonymized,
             "monitoring_paused_until": current_user.monitoring_paused_until.isoformat()
@@ -333,6 +338,9 @@ def delete_my_data(
         db.query(RiskHistory).filter_by(user_hash=user_hash).delete()
         db.query(AuditLog).filter_by(user_hash=user_hash).delete()
 
+        # Delete tenant membership
+        db.query(TenantMember).filter_by(user_hash=user_hash).delete()
+
         # Note: Events are intentionally kept for aggregate analysis
         # but anonymized (user_hash becomes NULL)
         from app.models.analytics import Event
@@ -381,6 +389,7 @@ def get_my_audit_trail(
             AuditLog.timestamp >= cutoff_date,
         )
         .order_by(AuditLog.timestamp.desc())
+        .limit(200)
         .all()
     )
 

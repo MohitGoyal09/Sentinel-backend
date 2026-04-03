@@ -17,15 +17,17 @@ from typing import List, Optional, Dict
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
 from app.models.analytics import RiskScore, RiskHistory, Event
-from app.api.deps.auth import get_current_user_identity, require_role
+from app.models.tenant import TenantMember
+from app.api.deps.auth import get_tenant_member, require_role
 from app.services.permission_service import PermissionService
+from app.services.audit_service import AuditService, AuditAction
 
 router = APIRouter()
 
 
 @router.get("/health", response_model=dict)
 def get_system_health(
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -38,47 +40,98 @@ def get_system_health(
     - Recent activity metrics
     - System performance indicators
     """
-    # Database statistics
-    total_users = db.query(UserIdentity).count()
-    total_events = db.query(Event).count()
-    total_audit_logs = db.query(AuditLog).count()
-    total_risk_scores = db.query(RiskScore).count()
+    # Subquery: user_hashes belonging to this tenant
+    tenant_user_hashes = (
+        db.query(TenantMember.user_hash)
+        .filter(TenantMember.tenant_id == member.tenant_id)
+        .subquery()
+    )
 
-    # User distribution by role
+    # Database statistics — scoped to this tenant
+    total_users = (
+        db.query(UserIdentity)
+        .filter(UserIdentity.tenant_id == member.tenant_id)
+        .count()
+    )
+    total_events = (
+        db.query(Event)
+        .filter(Event.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)))
+        .count()
+    )
+    total_audit_logs = (
+        db.query(AuditLog)
+        .filter(AuditLog.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)))
+        .count()
+    )
+    total_risk_scores = (
+        db.query(RiskScore)
+        .filter(RiskScore.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)))
+        .count()
+    )
+
+    # User distribution by role — scoped to this tenant via TenantMember
     role_distribution = (
-        db.query(UserIdentity.role, func.count(UserIdentity.user_hash).label("count"))
-        .group_by(UserIdentity.role)
+        db.query(TenantMember.role, func.count(TenantMember.id).label("count"))
+        .filter_by(tenant_id=member.tenant_id)
+        .group_by(TenantMember.role)
         .all()
     )
 
-    # Consent statistics
-    consent_stats = db.query(
-        func.sum(func.cast(UserIdentity.consent_share_with_manager, Integer)).label(
-            "consented"
-        ),
-        func.count(UserIdentity.user_hash).label("total"),
-    ).first()
+    # Consent statistics — scoped to this tenant
+    consent_stats = (
+        db.query(
+            func.sum(func.cast(UserIdentity.consent_share_with_manager, Integer)).label(
+                "consented"
+            ),
+            func.count(UserIdentity.user_hash).label("total"),
+        )
+        .filter(UserIdentity.tenant_id == member.tenant_id)
+        .first()
+    )
 
-    # Risk distribution across all users
+    # Risk distribution — scoped to this tenant
     risk_distribution = (
         db.query(RiskScore.risk_level, func.count(RiskScore.user_hash).label("count"))
+        .filter(RiskScore.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)))
         .group_by(RiskScore.risk_level)
         .all()
     )
 
-    # Recent activity (last 24 hours)
+    # Recent activity (last 24 hours) — scoped to this tenant
     day_ago = datetime.utcnow() - timedelta(hours=24)
-    recent_events_24h = db.query(Event).filter(Event.timestamp >= day_ago).count()
+    recent_events_24h = (
+        db.query(Event)
+        .filter(
+            Event.timestamp >= day_ago,
+            Event.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
+        .count()
+    )
     recent_audit_logs_24h = (
-        db.query(AuditLog).filter(AuditLog.timestamp >= day_ago).count()
+        db.query(AuditLog)
+        .filter(
+            AuditLog.timestamp >= day_ago,
+            AuditLog.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
+        .count()
     )
 
-    # Critical users count
+    # Critical users count — scoped to this tenant
     critical_count = (
-        db.query(RiskScore).filter(RiskScore.risk_level == "CRITICAL").count()
+        db.query(RiskScore)
+        .filter(
+            RiskScore.risk_level == "CRITICAL",
+            RiskScore.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
+        .count()
     )
     elevated_count = (
-        db.query(RiskScore).filter(RiskScore.risk_level == "ELEVATED").count()
+        db.query(RiskScore)
+        .filter(
+            RiskScore.risk_level == "ELEVATED",
+            RiskScore.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
+        .count()
     )
 
     return {
@@ -122,7 +175,7 @@ def get_system_audit_logs(
     user_hash: Optional[str] = None,
     limit: int = Query(default=100, le=1000),
     offset: int = 0,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -139,11 +192,14 @@ def get_system_audit_logs(
     """
     cutoff_date = datetime.utcnow() - timedelta(days=days)
 
-    # Build query
-    query = db.query(AuditLog).filter(AuditLog.timestamp >= cutoff_date)
+    # Build query — tenant-scoped
+    query = db.query(AuditLog).filter(
+        AuditLog.timestamp >= cutoff_date,
+        AuditLog.tenant_id == str(member.tenant_id),
+    )
 
     if action_type:
-        query = query.filter(AuditLog.action.like(f"%{action_type}%"))
+        query = query.filter(AuditLog.action == action_type)
 
     if user_hash:
         query = query.filter(AuditLog.user_hash == user_hash)
@@ -186,22 +242,27 @@ def get_all_users(
     role: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
     Get all users in the system with their status.
     Admin sees email addresses, managers see hashes only (privacy protected).
     """
-    query = db.query(UserIdentity)
+    # Join UserIdentity with TenantMember scoped to this tenant
+    query = db.query(UserIdentity, TenantMember.role, TenantMember.team_id).outerjoin(
+        TenantMember,
+        (TenantMember.user_hash == UserIdentity.user_hash)
+        & (TenantMember.tenant_id == member.tenant_id),
+    )
 
     if role:
-        query = query.filter(UserIdentity.role == role)
+        query = query.filter(TenantMember.role == role)
 
     total_count = query.count()
-    users = query.offset(offset).limit(limit).all()
+    results = query.offset(offset).limit(limit).all()
 
-    user_hashes = [u.user_hash for u in users]
+    user_hashes = [row.UserIdentity.user_hash for row in results]
     risk_scores = db.query(RiskScore).filter(RiskScore.user_hash.in_(user_hashes)).all()
 
     risk_map = {r.user_hash: r for r in risk_scores}
@@ -209,7 +270,10 @@ def get_all_users(
     from app.core.security import privacy
 
     formatted_users = []
-    for user in users:
+    for row in results:
+        user = row.UserIdentity
+        member_role = row.role
+        member_team_id = row.team_id
         risk = risk_map.get(user.user_hash)
 
         decrypted_email = (
@@ -223,7 +287,7 @@ def get_all_users(
                 "user_hash": user.user_hash,
                 "email": email,
                 "name": name,
-                "role": user.role,
+                "role": member_role,
                 "consent_share_with_manager": user.consent_share_with_manager,
                 "consent_share_anonymized": user.consent_share_anonymized,
                 "monitoring_paused": user.monitoring_paused_until is not None,
@@ -234,7 +298,7 @@ def get_all_users(
                 "risk_level": risk.risk_level if risk else "LOW",
                 "velocity": risk.velocity if risk else None,
                 "last_updated": risk.updated_at.isoformat() if risk else None,
-                "has_manager": user.manager_hash is not None,
+                "has_team": member_team_id is not None,
             }
         )
 
@@ -249,7 +313,7 @@ def get_all_users(
 @router.get("/statistics", response_model=dict)
 def get_system_statistics(
     days: int = 30,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
@@ -263,44 +327,63 @@ def get_system_statistics(
     """
     cutoff_date = datetime.utcnow() - timedelta(days=days)
 
-    # User growth (new users per day)
+    # Subquery: user_hashes belonging to this tenant
+    tenant_user_hashes = (
+        db.query(TenantMember.user_hash)
+        .filter(TenantMember.tenant_id == member.tenant_id)
+        .subquery()
+    )
+
+    # User growth (new users per day) — tenant-scoped
     new_users = (
         db.query(
             func.date(UserIdentity.created_at).label("date"),
             func.count(UserIdentity.user_hash).label("count"),
         )
-        .filter(UserIdentity.created_at >= cutoff_date)
+        .filter(
+            UserIdentity.created_at >= cutoff_date,
+            UserIdentity.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
         .group_by(func.date(UserIdentity.created_at))
         .all()
     )
 
-    # Daily activity (events per day)
+    # Daily activity (events per day) — tenant-scoped
     daily_events = (
         db.query(
             func.date(Event.timestamp).label("date"),
             func.count(Event.id).label("count"),
         )
-        .filter(Event.timestamp >= cutoff_date)
+        .filter(
+            Event.timestamp >= cutoff_date,
+            Event.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
         .group_by(func.date(Event.timestamp))
         .all()
     )
 
-    # Risk level changes over time
+    # Risk level changes over time — tenant-scoped
     risk_changes = (
         db.query(
             func.date(RiskScore.updated_at).label("date"),
             RiskScore.risk_level,
             func.count(RiskScore.user_hash).label("count"),
         )
-        .filter(RiskScore.updated_at >= cutoff_date)
+        .filter(
+            RiskScore.updated_at >= cutoff_date,
+            RiskScore.user_hash.in_(db.query(tenant_user_hashes.c.user_hash)),
+        )
         .group_by(func.date(RiskScore.updated_at), RiskScore.risk_level)
         .all()
     )
 
-    # Audit log action types distribution
+    # Audit log action types distribution — tenant-scoped
     action_types = (
         db.query(AuditLog.action, func.count(AuditLog.id).label("count"))
-        .filter(AuditLog.timestamp >= cutoff_date)
+        .filter(
+            AuditLog.timestamp >= cutoff_date,
+            AuditLog.tenant_id == str(member.tenant_id),
+        )
         .group_by(AuditLog.action)
         .order_by(desc(func.count(AuditLog.id)))
         .limit(20)
@@ -329,13 +412,14 @@ def get_system_statistics(
 def update_user_role(
     user_hash: str,
     new_role: str,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
     Update a user's role (admin only).
 
     Valid roles: employee, manager, admin
+    Updates TenantMember.role for the target user in this tenant.
     """
     valid_roles = ["employee", "manager", "admin"]
 
@@ -345,27 +429,32 @@ def update_user_role(
             detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}",
         )
 
-    user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+    # Verify target user exists in this tenant
+    target_member = (
+        db.query(TenantMember)
+        .filter_by(user_hash=user_hash, tenant_id=member.tenant_id)
+        .first()
+    )
 
-    if not user:
+    if not target_member:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organization",
         )
 
-    old_role = user.role
-    user.role = new_role
+    old_role = target_member.role
+    target_member.role = new_role
 
     # Log the change
-    audit_log = AuditLog(
-        user_hash=user_hash,
-        action="role_updated",
-        details={
-            "old_role": old_role,
-            "new_role": new_role,
-            "updated_by": current_user.user_hash,
-        },
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=member.user_hash,
+        actor_role=member.role,
+        action=AuditAction.ROLE_CHANGED,
+        target_hash=user_hash,
+        details={"old_role": old_role, "new_role": new_role},
+        tenant_id=member.tenant_id,
     )
-    db.add(audit_log)
     db.commit()
 
     return {
@@ -376,74 +465,101 @@ def update_user_role(
     }
 
 
-@router.post("/user/{user_hash}/manager")
-def assign_manager(
+@router.post("/user/{user_hash}/team")
+def assign_team(
     user_hash: str,
-    manager_hash: str,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    team_id: str,
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
-    Assign a manager to an employee (admin only).
+    Assign a user to a team (admin only).
+    Replaces the deprecated manager-assignment pattern — team membership
+    is now the source of truth for who reports to whom.
     """
-    # Verify user exists
-    user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
-    if not user:
+    from app.models.team import Team
+    import uuid as uuid_lib
+
+    # Validate team_id is a valid UUID
+    try:
+        parsed_team_id = uuid_lib.UUID(team_id)
+    except ValueError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid team_id format",
         )
 
-    # Verify manager exists and is actually a manager
-    manager = (
-        db.query(UserIdentity).filter_by(user_hash=manager_hash, role="manager").first()
+    # Verify the team exists within this tenant
+    team = (
+        db.query(Team)
+        .filter_by(id=parsed_team_id, tenant_id=member.tenant_id)
+        .first()
     )
-
-    if not manager:
+    if not team:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Manager not found or user is not a manager",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found in this organization",
         )
 
-    # Prevent assigning user as their own manager
-    if user_hash == manager_hash:
+    # Verify the target user is a member of this tenant
+    target_member = (
+        db.query(TenantMember)
+        .filter_by(user_hash=user_hash, tenant_id=member.tenant_id)
+        .first()
+    )
+    if not target_member:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot assign user as their own manager",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organization",
         )
 
-    old_manager = user.manager_hash
-    user.manager_hash = manager_hash
+    old_team_id = str(target_member.team_id) if target_member.team_id else None
+    target_member.team_id = parsed_team_id
 
     # Log the change
-    audit_log = AuditLog(
-        user_hash=user_hash,
-        action="manager_assigned",
+    audit = AuditService(db)
+    audit.log(
+        actor_hash=member.user_hash,
+        actor_role=member.role,
+        action=AuditAction.TEAM_MODIFIED,
+        target_hash=user_hash,
         details={
-            "old_manager": old_manager,
-            "new_manager": manager_hash,
-            "assigned_by": current_user.user_hash,
+            "old_team_id": old_team_id,
+            "new_team_id": team_id,
         },
+        tenant_id=member.tenant_id,
     )
-    db.add(audit_log)
     db.commit()
 
     return {
-        "message": "Manager assigned successfully",
+        "message": "User assigned to team successfully",
         "user_hash": user_hash,
-        "manager_hash": manager_hash,
-        "old_manager": old_manager,
+        "team_id": team_id,
+        "old_team_id": old_team_id,
     }
 
 
 @router.delete("/user/{user_hash}")
 def delete_user(
     user_hash: str,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
     Delete a user and all associated data (admin only).
     """
+    # Verify target user belongs to admin's tenant
+    target_member = (
+        db.query(TenantMember)
+        .filter_by(user_hash=user_hash, tenant_id=member.tenant_id)
+        .first()
+    )
+    if not target_member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organization",
+        )
+
     user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
 
     if not user:
@@ -451,7 +567,7 @@ def delete_user(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    if user_hash == current_user.user_hash:
+    if user_hash == member.user_hash:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
@@ -462,6 +578,7 @@ def delete_user(
     db.query(RiskScore).filter_by(user_hash=user_hash).delete()
     db.query(RiskHistory).filter_by(user_hash=user_hash).delete()
     db.query(AuditLog).filter_by(user_hash=user_hash).delete()
+    db.query(TenantMember).filter_by(user_hash=user_hash).delete()
 
     db.delete(user)
     db.commit()
@@ -476,12 +593,24 @@ def delete_user(
 def update_user(
     user_hash: str,
     email: Optional[str] = None,
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """
     Update user profile (admin only).
     """
+    # Verify target user belongs to admin's tenant
+    target_member = (
+        db.query(TenantMember)
+        .filter_by(user_hash=user_hash, tenant_id=member.tenant_id)
+        .first()
+    )
+    if not target_member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organization",
+        )
+
     user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
 
     if not user:
@@ -502,7 +631,7 @@ def update_user(
         action="profile_updated",
         details={
             "changes": changes,
-            "updated_by": current_user.user_hash,
+            "updated_by": member.user_hash,
         },
     )
     db.add(audit_log)
@@ -517,13 +646,17 @@ def update_user(
 
 @router.get("/managers")
 def get_managers(
-    current_user: UserIdentity = Depends(require_role("admin", "manager")),
+    member: TenantMember = Depends(require_role("admin", "manager")),
     db: Session = Depends(get_db),
 ):
     """
-    Get list of all managers (for assigning to employees).
+    Get list of all managers in this tenant (for assigning to teams).
     """
-    managers = db.query(UserIdentity).filter(UserIdentity.role == "manager").all()
+    managers = (
+        db.query(TenantMember)
+        .filter_by(tenant_id=member.tenant_id, role="manager")
+        .all()
+    )
 
     return {
         "managers": [
@@ -537,7 +670,7 @@ def get_managers(
 
 
 @router.get("/users/search")
-async def search_users(
+def search_users(
     q: str = "",
     role: str = "",
     sort_by: str = "created_at",
@@ -545,18 +678,23 @@ async def search_users(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
-    current_user: UserIdentity = Depends(require_role("admin")),
+    member: TenantMember = Depends(require_role("admin")),
 ):
     """Search and filter users with pagination."""
     from app.core.response import success_response
 
-    query = db.query(UserIdentity)
+    # Join UserIdentity with TenantMember scoped to this tenant
+    query = db.query(UserIdentity, TenantMember.role).outerjoin(
+        TenantMember,
+        (TenantMember.user_hash == UserIdentity.user_hash)
+        & (TenantMember.tenant_id == member.tenant_id),
+    )
 
     if q:
         query = query.filter(UserIdentity.user_hash.contains(q.lower()))
 
     if role:
-        query = query.filter(UserIdentity.role == role)
+        query = query.filter(TenantMember.role == role)
 
     total = query.count()
 
@@ -565,20 +703,22 @@ async def search_users(
         col = getattr(UserIdentity, sort_by)
         query = query.order_by(col.desc() if sort_order == "desc" else col.asc())
 
-    users = query.offset(offset).limit(limit).all()
+    results = query.offset(offset).limit(limit).all()
 
     return success_response(
         {
             "users": [
                 {
-                    "user_hash": u.user_hash,
-                    "role": u.role,
-                    "created_at": u.created_at.isoformat() if u.created_at else None,
-                    "consent_share_with_manager": u.consent_share_with_manager,
-                    "consent_share_anonymized": u.consent_share_anonymized,
-                    "monitoring_paused": u.monitoring_paused_until is not None,
+                    "user_hash": row.UserIdentity.user_hash,
+                    "role": row.role,
+                    "created_at": row.UserIdentity.created_at.isoformat()
+                    if row.UserIdentity.created_at
+                    else None,
+                    "consent_share_with_manager": row.UserIdentity.consent_share_with_manager,
+                    "consent_share_anonymized": row.UserIdentity.consent_share_anonymized,
+                    "monitoring_paused": row.UserIdentity.monitoring_paused_until is not None,
                 }
-                for u in users
+                for row in results
             ],
             "total": total,
             "limit": limit,
@@ -588,7 +728,7 @@ async def search_users(
 
 
 @router.get("/config", response_model=dict)
-def get_system_config(current_user: UserIdentity = Depends(require_role("admin"))):
+def get_system_config(member: TenantMember = Depends(require_role("admin"))):
     """
     Get current system configuration.
 
@@ -617,4 +757,95 @@ def get_system_config(current_user: UserIdentity = Depends(require_role("admin")
             "anonymization_enabled": True,
             "audit_logging_enabled": True,
         },
+    }
+
+
+@router.get("/pipeline/health")
+def get_pipeline_health(
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Pipeline health dashboard for admins (spec Section 6)."""
+    if member.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.api.v1.endpoints.ingestion import _pipeline_metrics
+
+    # DB-backed metrics
+    try:
+        total_db_events = db.query(func.count(Event.id)).scalar() or 0
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        events_last_hour = (
+            db.query(func.count(Event.id))
+            .filter(Event.timestamp >= one_hour_ago)
+            .scalar() or 0
+        )
+    except Exception:
+        total_db_events = 0
+        events_last_hour = 0
+
+    total_ingested = _pipeline_metrics.get("total_ingested", 0)
+    total_errors = _pipeline_metrics.get("total_errors", 0)
+    pipeline_start_iso = _pipeline_metrics.get("pipeline_start_time", datetime.utcnow().isoformat())
+
+    try:
+        uptime_hours = round(
+            (datetime.utcnow() - datetime.fromisoformat(pipeline_start_iso)).total_seconds() / 3600, 1
+        )
+    except Exception:
+        uptime_hours = 0.0
+
+    total_processed = total_db_events + total_ingested
+    error_rate_pct = round(total_errors / max(total_processed, 1) * 100, 2)
+
+    # Per-stage health
+    stage_metrics = _pipeline_metrics.get("stage_metrics", {})
+
+    def _stage_health(stage_name: str, processed: int) -> str:
+        sm = stage_metrics.get(stage_name, {})
+        if sm.get("error_count", 0) > 0:
+            return "degraded"
+        if processed == 0 and sm.get("processed", 0) == 0:
+            return "unknown"
+        return "ok"
+
+    stage_names = ["Collection", "Validation", "Privacy Layer", "Storage", "Engine Processing"]
+    stage_descriptions = [
+        "Webhooks & API polling from connected sources",
+        "Schema validation, deduplication, timestamp normalization",
+        "HMAC hashing, AES-256 encryption, PII removal",
+        "Dual-vault architecture (Vault A: analytics, Vault B: identity)",
+        "Safety Valve, Talent Scout, Culture Thermometer analysis",
+    ]
+
+    stages = []
+    for name, desc in zip(stage_names, stage_descriptions):
+        sm = stage_metrics.get(name, {})
+        processed = sm.get("processed", 0) or total_db_events
+        stages.append({
+            "name": name,
+            "status": "active",
+            "processed": processed,
+            "error_count": sm.get("error_count", 0),
+            "last_processed_at": sm.get("last_processed_at"),
+            "health": _stage_health(name, processed),
+            "description": desc,
+        })
+
+    degraded_count = sum(1 for s in stages if s["health"] == "degraded")
+    overall_status = "healthy" if degraded_count == 0 else ("degraded" if degraded_count <= 2 else "critical")
+
+    return {
+        "pipeline_health": {
+            "overall_status": overall_status,
+            "checked_at": datetime.utcnow().isoformat(),
+            "stages": stages,
+            "summary": {
+                "total_events_processed": total_processed,
+                "total_errors": total_errors,
+                "error_rate_pct": error_rate_pct,
+                "uptime_hours": uptime_hours,
+                "ingested_last_hour": events_last_hour,
+            },
+        }
     }

@@ -115,7 +115,6 @@ def get_current_user_identity(
             user = UserIdentity(
                 user_hash=user_hash,
                 email_encrypted=privacy.encrypt(response.user.email),
-                role=UserRole.EMPLOYEE.value,
             )
             db.add(user)
             db.commit()

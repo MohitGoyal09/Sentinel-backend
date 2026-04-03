@@ -1,6 +1,6 @@
 # Sentinel Backend
 
-AI-powered employee insight engine. FastAPI + PostgreSQL + Redis backend implementing the Three Engines architecture with privacy-by-design principles.
+AI-powered employee insight engine. Python 3.12 + FastAPI + Supabase PostgreSQL + Redis backend implementing the Three Engines architecture with privacy-by-design principles and full RBAC.
 
 ---
 
@@ -10,8 +10,12 @@ AI-powered employee insight engine. FastAPI + PostgreSQL + Redis backend impleme
 - [API Endpoints Summary](#api-endpoints-summary)
 - [Database Schema Overview](#database-schema-overview)
 - [Authentication and Security Model](#authentication-and-security-model)
+- [RBAC — Role-Based Access Control](#rbac--role-based-access-control)
+- [Ask Sentinel Chat Service](#ask-sentinel-chat-service)
+- [Audit Service](#audit-service)
 - [Environment Variables](#environment-variables)
 - [Running the Application](#running-the-application)
+- [Seed Demo Data](#seed-demo-data)
 - [Running Tests](#running-tests)
 - [Key Modules Explained](#key-modules-explained)
 
@@ -27,13 +31,13 @@ backend/
 │   ├── api/
 │   │   ├── v1/
 │   │   │   ├── endpoints/          # One router file per domain
-│   │   │   │   ├── admin.py        # System admin (health, audit logs, user mgmt)
-│   │   │   │   ├── ai.py           # AI chat, narrative reports, semantic query
+│   │   │   │   ├── admin.py        # Invite, user mgmt, pipeline health, audit logs
+│   │   │   │   ├── ai.py           # Ask Sentinel chat, chat history, narrative reports
 │   │   │   │   ├── analytics.py    # Team energy heatmap
-│   │   │   │   ├── auth.py         # Login, register, refresh, logout
+│   │   │   │   ├── auth.py         # Login, accept-invite, refresh, logout
 │   │   │   │   ├── auth_enhanced.py# MFA, passkeys, session management
 │   │   │   │   ├── demo.py         # Demo scenarios and seeding
-│   │   │   │   ├── engines.py      # Three Engines: Safety Valve, Talent Scout, Culture Therm.
+│   │   │   │   ├── engines.py      # Safety Valve, Talent Scout, Culture Therm.
 │   │   │   │   ├── ingestion.py    # Bulk data ingestion (CSV, webhooks)
 │   │   │   │   ├── me.py           # Employee self-service (consent, pause, delete)
 │   │   │   │   ├── notifications.py# In-app notification CRUD
@@ -46,13 +50,13 @@ backend/
 │   │   │   │   └── users.py        # User search and directory
 │   │   │   └── api.py              # Router aggregation
 │   │   ├── deps/
-│   │   │   └── auth.py             # Auth dependencies and role guards
+│   │   │   └── auth.py             # get_current_user, get_tenant_member, require_role
 │   │   └── websocket.py            # WebSocket endpoint handlers
 │   ├── core/
-│   │   ├── database.py             # SQLAlchemy engine and session factory
+│   │   ├── database.py             # Sync SQLAlchemy engine and session factory
 │   │   ├── logging_config.py       # Structured logging setup
 │   │   ├── rate_limiter.py         # Token-bucket rate limiting middleware
-│   │   ├── redis_client.py         # Async Redis client wrapper
+│   │   ├── redis_client.py         # Redis client wrapper
 │   │   ├── response.py             # Standardized success/error response helpers
 │   │   ├── security.py             # PrivacyEngine (hashing + Fernet encryption)
 │   │   ├── supabase.py             # Supabase client factory
@@ -65,14 +69,15 @@ backend/
 │   │   └── tenant_context.py       # Extract tenant_id from JWT or header
 │   ├── models/
 │   │   ├── analytics.py            # Vault A: Events, RiskScore, GraphEdge, etc.
-│   │   ├── identity.py             # Vault B: UserIdentity, AuditLog
+│   │   ├── identity.py             # Vault B: UserIdentity, AuditLog, ChatHistory
 │   │   ├── notification.py         # Notification, NotificationPreference, Template
-│   │   ├── tenant.py               # Tenant, TenantMember
+│   │   ├── team.py                 # Team (Phase 1: groups employees under a manager)
+│   │   ├── tenant.py               # Tenant, TenantMember (canonical role + team_id)
 │   │   └── workflow.py             # UserIntegration, WorkflowTemplate, WorkflowExecution
 │   ├── orchestrator/               # AI agent orchestration layer
 │   ├── schemas/
 │   │   ├── ai.py                   # AI endpoint request/response schemas
-│   │   ├── auth.py                 # Auth endpoint schemas
+│   │   ├── auth.py                 # Auth endpoint schemas (invite, accept-invite)
 │   │   ├── common.py               # Shared schemas
 │   │   ├── engines.py              # Engine endpoint schemas
 │   │   └── tenant.py               # Tenant schemas
@@ -80,19 +85,22 @@ backend/
 │   │   ├── safety_valve.py         # Burnout detection engine
 │   │   ├── talent_scout.py         # Network centrality engine
 │   │   ├── culture_temp.py         # Team health engine
-│   │   ├── llm.py                  # LiteLLM wrapper (Gemini, OpenAI)
+│   │   ├── llm.py                  # LLM wrapper (Portkey / Gemini)
+│   │   ├── sentinel_chat.py        # Ask Sentinel SSE pipeline (Phase 5)
+│   │   ├── audit_service.py        # AuditService + AuditAction constants (Phase 6)
 │   │   ├── simulation.py           # Digital twin / persona generator
 │   │   ├── sir_model.py            # SIR epidemic contagion forecasting
 │   │   ├── context.py              # External context enrichment (PagerDuty, Jira)
 │   │   ├── nudge_dispatcher.py     # Intervention nudge dispatch
-│   │   ├── permission_service.py   # RBAC permission checks
+│   │   ├── permission_service.py   # PermissionService: 52 permissions (Phase 2)
 │   │   ├── sso_service.py          # SSO provider registry
 │   │   ├── slack.py                # Slack integration
-│   │   ├── talent_scout.py         # Network analysis
 │   │   ├── tool_augmented_llm.py   # LLM with tool calling
 │   │   └── websocket_manager.py    # WebSocket connection registry
 │   ├── config.py                   # Settings via pydantic-settings
 │   └── main.py                     # FastAPI app factory and startup
+├── scripts/
+│   └── seed_fresh.py               # Demo seed: 13 users, 3 teams, Acme Corp
 ├── alembic/                        # Alembic migration scripts
 ├── tests/                          # Pytest test suite
 ├── requirements.txt
@@ -149,10 +157,12 @@ All endpoints are prefixed with `/api/v1`. Authentication is required on all end
 
 ### Auth (`/auth`)
 
+Open registration has been removed. New users must be invited by an admin.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/register` | None | Create account and default tenant |
 | `POST` | `/auth/login` | None | Sign in, returns JWT pair and tenant list |
+| `POST` | `/auth/accept-invite` | None | Complete onboarding from an invitation token |
 | `POST` | `/auth/refresh` | None | Refresh access token |
 | `POST` | `/auth/logout` | Required | Sign out |
 | `POST` | `/auth/forgot-password` | None | Send password reset email |
@@ -198,8 +208,17 @@ All endpoints are prefixed with `/api/v1`. Authentication is required on all end
 | `GET` | `/ai/narratives/team/{team_hash}` | Required | Alias for team report |
 | `POST` | `/ai/copilot/agenda` | Required | Generate 1:1 talking points |
 | `POST` | `/ai/query` | Required | Natural language query over employee data |
-| `POST` | `/ai/chat` | Required | Role-aware AI chat (employee/manager/admin) |
-| `POST` | `/ai/chat/stream` | Required | Streaming SSE version of chat |
+| `POST` | `/ai/chat` | Required | Role-aware AI chat (employee/manager/admin); auto-creates session if no `session_id` provided |
+| `POST` | `/ai/chat/stream` | Required | SSE streaming version of Ask Sentinel chat; auto-creates session |
+| `POST` | `/ai/feedback` | Required | Submit thumbs-up/down feedback on a chat response |
+| `GET` | `/ai/chat/history` | Required | List recent conversations (paginated) |
+| `GET` | `/ai/chat/history/{conversation_id}` | Required | Full turn history for a conversation |
+| `POST` | `/ai/chat/sessions` | Required | Create a new named chat session |
+| `GET` | `/ai/chat/sessions` | Required | Paginated session list (supports `search`, `limit`, `offset`) |
+| `GET` | `/ai/chat/sessions/{session_id}` | Required | Session metadata + full message history |
+| `PUT` | `/ai/chat/sessions/{session_id}` | Required | Rename a session |
+| `DELETE` | `/ai/chat/sessions/{session_id}` | Required | Soft-delete a session |
+| `POST` | `/ai/chat/sessions/{session_id}/favorite` | Required | Toggle favorite/pin flag |
 
 ### Me (`/me`)
 
@@ -214,12 +233,14 @@ All endpoints are prefixed with `/api/v1`. Authentication is required on all end
 
 ### Admin (`/admin`)
 
-| Method | Path | Auth | Role |
-|---|---|---|---|
-| `GET` | `/admin/health` | Required | admin |
-| `GET` | `/admin/audit-logs` | Required | admin |
-| `GET` | `/admin/users` | Required | admin |
-| `PUT` | `/admin/users/{user_hash}/role` | Required | admin |
+| Method | Path | Auth | Role | Description |
+|---|---|---|---|---|
+| `GET` | `/admin/health` | Required | admin | System health |
+| `GET` | `/admin/audit-logs` | Required | admin | Paginated audit log |
+| `GET` | `/admin/users` | Required | admin | All users with roles |
+| `PUT` | `/admin/users/{user_hash}/role` | Required | admin | Change a user's role |
+| `POST` | `/admin/invite` | Required | admin | Create and email an invitation |
+| `GET` | `/admin/pipeline/health` | Required | admin | Ask Sentinel pipeline component status |
 
 ### Notifications (`/notifications`)
 
@@ -417,16 +438,66 @@ Immutable access trail.
 
 #### `tenant_members`
 
+**Canonical role source.** A user's effective role within a tenant is always read from `tenant_members.role`, not `UserIdentity.role`.
+
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID (PK) | |
 | `tenant_id` | UUID | FK → tenants |
 | `user_hash` | String(64) | FK → users |
-| `role` | String(20) | `owner`, `admin`, `member` |
-| `invited_by` | String(64) | |
+| `role` | String(20) | `admin`, `manager`, `employee` |
+| `team_id` | UUID | FK → teams (nullable) |
+| `invited_by` | String(64) | user_hash of the inviting admin |
 | `joined_at` | DateTime | |
 
 Unique constraint: `(tenant_id, user_hash)`.
+
+#### `teams`
+
+Groups employees under a manager within a tenant (added in Phase 1).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `tenant_id` | UUID | FK → tenants (CASCADE) |
+| `name` | String(100) | |
+| `manager_hash` | String(64) | user_hash of the team manager (nullable) |
+| `created_at` | DateTime | |
+
+Unique constraint: `(tenant_id, name)`.
+
+#### `chat_sessions` (within Vault B)
+
+Named session containers for Ask Sentinel conversations. Each session groups many `chat_history` turns.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `user_hash` | String(64) | FK → users |
+| `tenant_id` | UUID | |
+| `title` | String(255) | Display name; auto-generated from first message |
+| `is_favorite` | Boolean | Default `false`; toggled via favorite endpoint |
+| `is_active` | Boolean | Default `true`; set to `false` on soft-delete |
+| `created_at` | DateTime | |
+| `updated_at` | DateTime | |
+
+Index: `(user_hash, tenant_id, is_active, updated_at)`.
+
+#### `chat_history` (within Vault B)
+
+Persists Ask Sentinel conversation turns. Each row is a single message belonging to a `chat_sessions` record.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `conversation_id` | String | FK → `chat_sessions.id` |
+| `user_hash` | String(64) | |
+| `tenant_id` | UUID | |
+| `role` | String | `user` or `assistant` |
+| `type` | String | Message type tag (default `message`) |
+| `content` | Text | Message body |
+| `metadata_` | JSON | Arbitrary metadata (e.g., `{"role": "manager"}`) |
+| `created_at` | DateTime | |
 
 #### `notifications`
 
@@ -533,12 +604,14 @@ Execution log for every workflow run.
 
 ### Authentication Flow
 
-1. User registers or logs in via `POST /auth/register` or `POST /auth/login`.
-2. Credentials are validated against **Supabase Auth**.
-3. Supabase returns a JWT access token (15-minute lifetime) and refresh token (7-day lifetime).
-4. The frontend sends the access token as `Authorization: Bearer <token>` on all subsequent requests.
-5. The `get_current_user_identity` dependency validates the JWT against Supabase and loads the `UserIdentity` record from the local database.
-6. The `X-Tenant-ID` header or the `tenant_id` claim in the JWT sets the active tenant context.
+1. An admin invites a new user via `POST /admin/invite`. A time-limited invitation token is emailed.
+2. The invitee accepts via `POST /auth/accept-invite`, sets a password, and is registered in Supabase Auth.
+3. Credentials are validated against **Supabase Auth** on subsequent logins via `POST /auth/login`.
+4. Supabase returns a JWT access token (15-minute lifetime) and refresh token (7-day lifetime).
+5. The frontend sends the access token as `Authorization: Bearer <token>` on all subsequent requests.
+6. The `get_current_user_identity` dependency validates the JWT against Supabase and loads the `UserIdentity` record from the local database.
+7. `get_tenant_member` resolves the caller's `TenantMember` row — the single source of truth for `role` and `team_id`.
+8. The `X-Tenant-ID` header or the `tenant_id` claim in the JWT sets the active tenant context.
 
 ### Role-Based Access Control
 
@@ -548,11 +621,11 @@ Three roles are enforced at the endpoint and service layers:
 |---|---|
 | `employee` | Own data only; consent-gated manager sharing |
 | `manager` | Own data + direct reports (consent-dependent) + team aggregates |
-| `admin` | All data, system health, user management |
+| `admin` | All data, system health, user management, 36 h critical override |
 
 The `require_role` dependency factory (`app/api/deps/auth.py`) enforces role membership and raises `403` on failure.
 
-The `PermissionService` (`app/services/permission_service.py`) provides fine-grained `can_view_user_data(accessor, target)` checks that respect both role and consent settings.
+The `PermissionService` (`app/services/permission_service.py`) provides fine-grained `can_view_user_data(accessor, target)` checks that respect both role and consent settings. See the [RBAC section](#rbac--role-based-access-control) below for the full permission list.
 
 ### Privacy and Encryption
 
@@ -577,6 +650,112 @@ SSO providers are registered at startup from environment variables. Three provid
 - **Google OAuth 2.0** — optional domain allow-list
 - **Azure AD** — single tenant or multi-tenant (use `AZURE_TENANT_ID=common`)
 - **SAML 2.0** — bring your own IdP metadata
+
+---
+
+## RBAC — Role-Based Access Control
+
+Implemented in Phase 2. All role information is authoritative from `TenantMember.role`; `UserIdentity.role` is not used for access decisions.
+
+### Dependency chain
+
+```
+get_current_user()          — validates Supabase JWT, returns UserIdentity
+    └── get_tenant_member() — loads TenantMember row for active tenant
+            └── require_role("admin") — raises 403 if role not satisfied
+```
+
+### 52 permissions (grouped)
+
+| Group | Permissions |
+|---|---|
+| User data | `view_own_data`, `view_direct_report_data`, `view_all_user_data`, `view_team_data`, `view_aggregated_data` |
+| Risk scores | `view_own_risk`, `view_report_risk`, `view_all_risk`, `export_risk_data` |
+| Identity | `reveal_identity`, `critical_override` (36 h window, admin only) |
+| Audit | `view_own_audit`, `view_all_audit`, `export_audit` |
+| Consent / monitoring | `update_own_consent`, `manage_consent`, `pause_own_monitoring`, `manage_monitoring` |
+| AI chat | `use_ai_chat`, `view_ai_insights`, `configure_ai` |
+| Team management | `view_team_list`, `create_team`, `update_team`, `delete_team`, `assign_team_member` |
+| User management | `invite_user`, `remove_user`, `change_user_role`, `view_user_directory` |
+| Integrations | `connect_integration`, `disconnect_integration`, `view_integrations`, `execute_tool` |
+| Reports | `view_reports`, `generate_report`, `export_report`, `schedule_report` |
+| Notifications | `view_notifications`, `manage_notifications`, `configure_notifications` |
+| System | `view_system_health`, `manage_system_settings`, `view_pipeline_health` |
+
+### 36 h critical override
+
+Admins may call `PermissionService.record_critical_override()` to log an `AuditAction.CRITICAL_OVERRIDE_ACCESS` event and temporarily elevate access to CRITICAL-risk employee identity data. The override window is 36 hours.
+
+---
+
+## Ask Sentinel Chat Service
+
+`app/services/sentinel_chat.py` orchestrates every Ask Sentinel response through a typed SSE pipeline.
+
+### Session management
+
+Every call to `POST /ai/chat` or `POST /ai/chat/stream` automatically resolves or creates a `ChatSession`. If the request includes a `session_id` the existing session is resumed; if not, a new session is created with the title `"Untitled Chat"` and its UUID is returned in the response so the client can bookmark it.
+
+After the first message in a new session, `ChatHistoryService.auto_title_session` calls the LLM to generate a short descriptive title (≤ 60 chars) from the user's opening message. The title is written back to `chat_sessions.title` before the next request.
+
+### SSE pipeline
+
+```
+POST /ai/chat/stream (EventSourceResponse)
+    │
+    ▼  stage: "refusal"
+RefusalClassifier          — blocks out-of-scope or harmful queries (emits refusal event)
+    │
+    ▼  stage: "workflow"
+WorkflowIntentParser       — detects actionable intents (calendar block, Slack nudge, etc.)
+    │
+    ▼  stage: "boundary"
+DataBoundaryEnforcer       — builds role-scoped context (employee / manager / admin)
+    │
+    ▼  stage: "tools" (optional)
+Tool augmentation          — fetches calendar / Slack data if intent requires it
+    │
+    ▼  stage: "llm"
+LLM call (Portkey/Gemini)  — streams tokens to the client
+    │
+    ▼  stage: "done"
+Terminal event             — always emitted, signals stream end
+```
+
+SSE event envelope:
+
+```json
+{ "stage": "llm", "delta": "token text", "done": false }
+{ "stage": "done", "conversation_id": "uuid", "done": true }
+```
+
+Chat turns are persisted to `identity.chat_history` so they are retrievable via `GET /ai/chat/history`, `GET /ai/chat/history/{conversation_id}`, and the session-based `GET /ai/chat/sessions/{session_id}` endpoint.
+
+The frontend uses a native `fetch` + `ReadableStream` approach with an `AbortController` for cancellation (no Vercel AI SDK dependency on the backend).
+
+---
+
+## Audit Service
+
+Implemented in Phase 6. `app/services/audit_service.py` is the single entry point for all audit writes.
+
+```python
+AuditService.log(db, user_hash, AuditAction.ROLE_CHANGED, details={...})
+```
+
+### `AuditAction` constants (18 total)
+
+| Group | Constants |
+|---|---|
+| Identity / access | `IDENTITY_REVEALED`, `CRITICAL_OVERRIDE_ACCESS`, `DATA_ACCESSED`, `DATA_EXPORTED`, `OUT_OF_SCOPE_QUERY` |
+| User lifecycle | `ROLE_CHANGED`, `USER_INVITED`, `USER_REMOVED`, `USER_DEACTIVATED` |
+| Team management | `TEAM_MODIFIED` |
+| Consent / monitoring | `CONSENT_CHANGED`, `MONITORING_PAUSED` |
+| Workflows | `WORKFLOW_CREATED`, `WORKFLOW_EXECUTED` |
+| Tools / integrations | `TOOL_CONNECTED`, `TOOL_DISCONNECTED` |
+| Engine / data ops | `ENGINE_RECOMPUTED`, `CSV_UPLOADED` |
+
+All writes are immutable rows in `identity.audit_logs`. The `GET /admin/audit-logs` endpoint exposes them to admins with filtering.
 
 ---
 
@@ -644,6 +823,33 @@ alembic revision --autogenerate -m "describe the change"
 
 ---
 
+## Seed Demo Data
+
+```bash
+cd backend
+
+# Windows
+.venv\Scripts\python -m scripts.seed_fresh
+
+# macOS / Linux
+python -m scripts.seed_fresh
+
+# Alternative (module path form, cross-platform)
+python -m scripts.seed_fresh
+```
+
+Creates the **Acme Corp** tenant with 13 users across 3 teams (Engineering, Design, Data Science). All passwords are `Demo123!`. Key accounts:
+
+| Email | Role | Notes |
+|---|---|---|
+| `admin@acme.com` | admin | Primary admin |
+| `eng.manager@acme.com` | manager | Engineering lead |
+| `dev1@acme.com` | employee | CRITICAL burnout risk |
+
+See the [root README demo data section](../README.md#demo-data) for the full user list.
+
+---
+
 ## Running Tests
 
 ```bash
@@ -680,7 +886,13 @@ Aggregates individual risk scores across a team to assess collective health. Cal
 
 ### `app/services/llm.py`
 
-Wraps LiteLLM to provide a provider-agnostic interface. Supports synchronous (`generate_insight`) and streaming (`generate_chat_response_stream`) response modes. Configured via `LLM_PROVIDER`, `LLM_MODEL`, and the corresponding API key.
+Provider-agnostic LLM interface with a three-tier fallback strategy:
+
+1. **Portkey gateway** (if `PORTKEY_API_KEY` and a valid virtual key are set) — provides automatic retries and fallback routing.
+2. **Gemini 2.5 Flash direct** (if `GEMINI_API_KEY` is set) — connects to Google's OpenAI-compatible endpoint. This is the default for the demo environment.
+3. **Groq direct** (if `LLM_API_KEY` is set) — uses `llama-3.3-70b-versatile` via the Groq OpenAI-compatible endpoint.
+
+Supports synchronous (`generate_insight`) and streaming (`generate_chat_response_stream`) response modes.
 
 ### `app/integrations/composio_client.py`
 
@@ -707,3 +919,34 @@ The digital twin generator. `RealTimeSimulator` creates synthetic `Event` record
 ### `app/middleware/tenant_context.py`
 
 Extracts `tenant_id` from the JWT claims or the `X-Tenant-ID` request header and stores it in `request.state.tenant_id`. All subsequent queries scope to this tenant automatically.
+
+### `app/services/permission_service.py`
+
+Implements `PermissionService` with 52 named permission checks grouped by domain. The `can_view_user_data(accessor_member, target_hash, db)` method is the primary call site for data-access decisions. It respects both `TenantMember.role` and the target user's consent settings. Admins with a valid critical override may bypass consent gates for CRITICAL-risk users within a 36-hour window.
+
+### `app/services/chat_history_service.py`
+
+`ChatHistoryService` is the single data-access layer for all chat persistence. Key methods:
+
+- `create_session` — inserts a new `ChatSession` row.
+- `get_session` / `get_sessions` — tenant-scoped session retrieval with optional title search.
+- `rename_session` — updates `title` and `updated_at`.
+- `delete_session` — soft-delete (`is_active=False`); underlying turns are preserved.
+- `toggle_favorite` — flips `is_favorite`.
+- `persist_turn` — inserts a `ChatHistory` row and flushes to the session.
+- `get_conversation_turns` — returns all turns for a session ordered by `created_at`.
+- `auto_title_session` — calls the LLM to generate a short descriptive title from the first user message, then writes it back to `ChatSession.title`.
+
+All queries include `user_hash` and `tenant_id` as mandatory filters; cross-user and cross-tenant access is structurally prevented.
+
+### `app/services/sentinel_chat.py`
+
+Orchestrates Ask Sentinel responses. The `stream_chat_response(message, role, db, ...)` async generator yields SSE-formatted JSON strings. It runs the five-stage pipeline (refusal → workflow → boundary → LLM → done) and persists each turn to `identity.chat_history` via `ChatHistoryService`.
+
+### `app/services/audit_service.py`
+
+Provides `AuditService.log(db, user_hash, action, details)` — the only approved way to write to `identity.audit_logs`. Action constants live in `AuditAction` (18 snake_case strings). Using string constants rather than an Enum avoids `.value` boilerplate at every call site while keeping IDE autocomplete.
+
+### `app/models/team.py`
+
+Defines the `Team` model in the `identity` schema. Teams belong to a tenant and optionally have a `manager_hash`. `TenantMember` rows carry a `team_id` FK, making team membership a first-class attribute on every user's tenant record.

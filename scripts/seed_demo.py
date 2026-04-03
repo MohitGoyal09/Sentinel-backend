@@ -208,12 +208,10 @@ def seed_demo():
                         f"    [AUTH] Supabase user may already exist: {u['email']} ({e})"
                     )
 
-                manager_hash = user_hashes.get(u["manager"]) if u["manager"] else None
                 user = UserIdentity(
                     user_hash=user_hash,
                     email_encrypted=privacy.encrypt(u["email"]),
                     role=u["role"],
-                    manager_hash=manager_hash,
                     consent_share_with_manager=(u["role"] != "admin"),
                     consent_share_anonymized=True,
                 )

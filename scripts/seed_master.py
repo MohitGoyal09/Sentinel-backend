@@ -96,7 +96,6 @@ def _ensure_tables():
         "ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS consent_share_with_manager BOOLEAN DEFAULT FALSE",
         "ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS consent_share_anonymized BOOLEAN DEFAULT TRUE",
         "ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS monitoring_paused_until TIMESTAMP",
-        "ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS manager_hash VARCHAR(64)",
         "ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS slack_id_encrypted BYTEA",
         # identity.tenants — ensure all columns exist
         "ALTER TABLE identity.tenants ADD COLUMN IF NOT EXISTS plan VARCHAR(50) DEFAULT 'free'",
@@ -1227,7 +1226,6 @@ def seed():
         # Step 2: UserIdentity + TenantMember + NotificationPreferences
         for person in CAST:
             uh = hashes[person["email"]]
-            manager_hash = hashes.get(person["manager"]) if person["manager"] else None
             joined_days_ago = 30 if person["persona"] == "new_hire" else 60
 
             db.add(UserIdentity(
@@ -1236,7 +1234,6 @@ def seed():
                 email_encrypted=privacy.encrypt(person["email"]),
                 slack_id_encrypted=privacy.encrypt(person["slack_id"]),
                 role=person["role"],
-                manager_hash=manager_hash,
                 consent_share_with_manager=(person["role"] != "admin"),
                 consent_share_anonymized=True,
                 created_at=now - timedelta(days=joined_days_ago),

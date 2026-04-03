@@ -152,20 +152,13 @@ def seed_identities(conn) -> Dict[str, str]:
         slack_encrypted = privacy.encrypt(slack_id) if slack_id else None
 
         role = ROLE_ASSIGNMENTS.get(persona_id, "employee")
-        manager_hash = (
-            user_hashes.get(MANAGER_MAPPINGS.get(persona_id))
-            if persona_id in MANAGER_MAPPINGS
-            else None
-        )
         consent_share = CONSENT_SHARE.get(persona_id, False)
 
         try:
             sql = text("""
-                INSERT INTO identity.users (user_hash, email_encrypted, slack_id_encrypted, role, manager_hash, consent_share_with_manager, created_at)
-                VALUES (:user_hash, :email_encrypted, :slack_id_encrypted, :role, :manager_hash, :consent_share_with_manager, :created_at)
+                INSERT INTO identity.users (user_hash, email_encrypted, slack_id_encrypted, consent_share_with_manager, created_at)
+                VALUES (:user_hash, :email_encrypted, :slack_id_encrypted, :consent_share_with_manager, :created_at)
                 ON CONFLICT (user_hash) DO UPDATE SET
-                    role = EXCLUDED.role,
-                    manager_hash = EXCLUDED.manager_hash,
                     consent_share_with_manager = EXCLUDED.consent_share_with_manager
             """)
             conn.execute(
@@ -174,8 +167,6 @@ def seed_identities(conn) -> Dict[str, str]:
                     "user_hash": user_hash,
                     "email_encrypted": email_encrypted,
                     "slack_id_encrypted": slack_encrypted,
-                    "role": role,
-                    "manager_hash": manager_hash,
                     "consent_share_with_manager": consent_share,
                     "created_at": datetime.now(timezone.utc),
                 },
