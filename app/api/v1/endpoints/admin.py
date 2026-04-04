@@ -250,7 +250,7 @@ def get_all_users(
     Admin sees email addresses, managers see hashes only (privacy protected).
     """
     # Join UserIdentity with TenantMember scoped to this tenant
-    query = db.query(UserIdentity, TenantMember.role, TenantMember.team_id).outerjoin(
+    query = db.query(UserIdentity, TenantMember).outerjoin(
         TenantMember,
         (TenantMember.user_hash == UserIdentity.user_hash)
         & (TenantMember.tenant_id == member.tenant_id),
@@ -264,41 +264,50 @@ def get_all_users(
 
     user_hashes = [row.UserIdentity.user_hash for row in results]
     risk_scores = db.query(RiskScore).filter(RiskScore.user_hash.in_(user_hashes)).all()
-
     risk_map = {r.user_hash: r for r in risk_scores}
 
+    # Build team name lookup
+    from app.models.team import Team
     from app.core.security import privacy
+
+    team_ids = {row.TenantMember.team_id for row in results if row.TenantMember and row.TenantMember.team_id}
+    teams = db.query(Team).filter(Team.id.in_(team_ids)).all() if team_ids else []
+    team_map = {str(t.id): t.name for t in teams}
 
     formatted_users = []
     for row in results:
         user = row.UserIdentity
-        member_role = row.role
-        member_team_id = row.team_id
+        tm = row.TenantMember
         risk = risk_map.get(user.user_hash)
 
-        decrypted_email = (
-            privacy.decrypt(user.email_encrypted) if user.email_encrypted else ""
-        )
-        email = decrypted_email if decrypted_email else None
-        name = email.split("@")[0] if email else user.user_hash[:8]
+        # Use display_name from TenantMember, fall back to email prefix
+        name = tm.display_name if tm and tm.display_name else None
+        if not name:
+            decrypted_email = privacy.decrypt(user.email_encrypted) if user.email_encrypted else ""
+            name = decrypted_email.split("@")[0].replace(".", " ").title() if decrypted_email else user.user_hash[:8]
+
+        decrypted_email = privacy.decrypt(user.email_encrypted) if user.email_encrypted else None
+
+        # Get team name
+        team_name = None
+        if tm and tm.team_id:
+            team_name = team_map.get(str(tm.team_id))
 
         formatted_users.append(
             {
                 "user_hash": user.user_hash,
-                "email": email,
+                "email": decrypted_email,
                 "name": name,
-                "role": member_role,
+                "role": tm.role if tm else "employee",
+                "team_name": team_name,
+                "team_id": str(tm.team_id) if tm and tm.team_id else None,
                 "consent_share_with_manager": user.consent_share_with_manager,
                 "consent_share_anonymized": user.consent_share_anonymized,
                 "monitoring_paused": user.monitoring_paused_until is not None,
-                "monitoring_paused_until": user.monitoring_paused_until.isoformat()
-                if user.monitoring_paused_until
-                else None,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
                 "risk_level": risk.risk_level if risk else "LOW",
                 "velocity": risk.velocity if risk else None,
                 "last_updated": risk.updated_at.isoformat() if risk else None,
-                "has_team": member_team_id is not None,
             }
         )
 
@@ -575,6 +584,20 @@ def delete_user(
 
     user_hash_deleted = user.user_hash
 
+    # Delete all related data in correct order (FK constraints)
+    from app.models.notification import Notification, NotificationPreference
+    from app.models.analytics import Event, GraphEdge, CentralityScore, SkillProfile
+    from app.models.chat_history import ChatHistory, ChatSession
+
+    db.query(NotificationPreference).filter_by(user_hash=user_hash).delete()
+    db.query(Notification).filter_by(user_hash=user_hash).delete()
+    db.query(ChatHistory).filter_by(user_hash=user_hash).delete()
+    db.query(ChatSession).filter_by(user_hash=user_hash).delete()
+    db.query(Event).filter_by(user_hash=user_hash).delete()
+    db.query(GraphEdge).filter_by(source_hash=user_hash).delete()
+    db.query(GraphEdge).filter_by(target_hash=user_hash).delete()
+    db.query(CentralityScore).filter_by(user_hash=user_hash).delete()
+    db.query(SkillProfile).filter_by(user_hash=user_hash).delete()
     db.query(RiskScore).filter_by(user_hash=user_hash).delete()
     db.query(RiskHistory).filter_by(user_hash=user_hash).delete()
     db.query(AuditLog).filter_by(user_hash=user_hash).delete()

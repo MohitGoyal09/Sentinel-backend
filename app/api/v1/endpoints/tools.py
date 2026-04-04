@@ -7,7 +7,7 @@ Also exposes marketplace endpoints for connecting/disconnecting integrations.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 
@@ -15,6 +15,7 @@ from app.models.identity import UserIdentity
 from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, get_tenant_member
 from app.core.database import get_db
+from app.config import get_settings
 from app.integrations.composio_client import composio_client
 from app.services.audit_service import AuditService, AuditAction
 from pydantic import BaseModel, Field
@@ -335,6 +336,88 @@ async def get_slack_activity(
         )
 
     return result
+
+
+# ============================================================================
+# TOOLKITS LISTING ENDPOINT (Dynamic Composio API)
+# ============================================================================
+
+
+@router.get("/toolkits")
+async def list_toolkits(
+    search: str = Query("", description="Search query to filter toolkits"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of items per page"),
+    cursor: str | None = Query(None, description="Cursor for pagination"),
+    member: TenantMember = Depends(get_tenant_member),
+):
+    """List available toolkits from Composio API with search and pagination."""
+    import requests as http_requests
+
+    settings = get_settings()
+
+    if not settings.composio_api_key:
+        # Fall back to static catalog
+        return {
+            "items": _AVAILABLE_TOOLS,
+            "total": len(_AVAILABLE_TOOLS),
+            "next_cursor": None,
+        }
+
+    try:
+        params: Dict[str, Any] = {
+            "toolkit_versions": "latest",
+            "limit": min(limit, 1000),
+        }
+        if search:
+            params["search"] = search
+        if cursor:
+            params["cursor"] = cursor
+
+        headers = {"x-api-key": settings.composio_api_key}
+        resp = http_requests.get(
+            "https://backend.composio.dev/api/v3/toolkits",
+            headers=headers,
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items: List[Dict[str, Any]] = []
+        for tk in data.get("items", []):
+            slug = tk.get("slug", "")
+            meta = tk.get("meta", {})
+            categories = meta.get("categories", [])
+            category_name = (
+                categories[0].get("name", "other") if categories else "other"
+            )
+            items.append(
+                {
+                    "slug": slug,
+                    "name": tk.get("name", slug),
+                    "description": meta.get(
+                        "description", tk.get("description", "")
+                    ),
+                    "logo": meta.get(
+                        "logo", f"https://logos.composio.dev/api/{slug}"
+                    ),
+                    "category": category_name,
+                    "no_auth": tk.get("no_auth", False),
+                }
+            )
+
+        return {
+            "items": items,
+            "total": data.get("totalItems", len(items)),
+            "next_cursor": data.get("next_cursor"),
+        }
+    except Exception as e:
+        logger.error("Failed to fetch toolkits from Composio: %s", e)
+        return {
+            "items": _AVAILABLE_TOOLS,
+            "total": len(_AVAILABLE_TOOLS),
+            "next_cursor": None,
+        }
 
 
 # ============================================================================

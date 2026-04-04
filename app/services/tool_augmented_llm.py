@@ -35,16 +35,32 @@ class ToolAugmentedLLM:
             r"too many meetings",
             r"back.to.back meetings",
             r"meeting hours",
+            r"(check|show|view|see|what).*(schedule|events?|appointments?)",
+            r"(schedule|book|create|cancel|reschedule).*(meeting|event|appointment|call)",
+            r"(free|available|open) (time|slots?)",
+            r"(next|upcoming|today).*(meeting|event|call)",
         ],
         "slack": [
             r"slack (messages|activity)",
             r"communication (load|patterns)",
             r"messages sent",
+            r"(check|read|show|view|see).*(slack|channels?|DMs?)",
+            r"(send|post|write|message).*(slack|channel)",
+            r"any new.*(slack|messages)",
         ],
         "github": [
             r"commits",
-            r"pull requests",
+            r"pull requests?",
             r"code (activity|contributions)",
+            r"(check|show|view|see|list|review).*(PRs?|pull requests?|issues?|repos?)",
+            r"(create|open|submit|close|merge).*(PR|pull request|issue|branch)",
+            r"(my|open|pending) (PRs?|pull requests?|issues?)",
+        ],
+        "email": [
+            r"(check|read|show|get|open|view|see|look at|any new).*(email|emails|mail|inbox)",
+            r"(send|compose|write|draft|reply|forward).*(email|mail|message)",
+            r"\binbox\b",
+            r"(unread|new) (email|mail|message)s?",
         ],
     }
 
@@ -151,6 +167,44 @@ class ToolAugmentedLLM:
         }
 
     @staticmethod
+    async def fetch_email_context(entity_id: str) -> Dict[str, Any]:
+        """Fetch email/inbox data for context enrichment."""
+        if not composio_client.is_available():
+            return {
+                "available": False,
+                "note": "Email integration not configured",
+            }
+
+        try:
+            result = await composio_client.execute_tool(
+                tool="email",
+                action="list_inbox",
+                params={"maxResults": 10, "labelIds": ["INBOX"], "q": "is:unread"},
+                entity_id=entity_id,
+            )
+
+            if not result.get("success"):
+                return {"available": False, "error": result.get("error")}
+
+            messages = result.get("result", {}).get("data", {}).get("messages", [])
+            count = len(messages)
+
+            return {
+                "available": True,
+                "tool": "email",
+                "data": {
+                    "unread_count": count,
+                    "messages": messages[:5],  # First 5 for summary
+                },
+                "summary": (
+                    f"User has {count} unread email(s) in their inbox."
+                ),
+            }
+        except Exception as e:
+            logger.error(f"Email context fetch failed for {entity_id}: {e}")
+            return {"available": False, "error": str(e)}
+
+    @staticmethod
     async def augment_context_with_tools(
         query: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -184,6 +238,8 @@ class ToolAugmentedLLM:
             tool_data = await ToolAugmentedLLM.fetch_calendar_context(entity_id)
         elif tool_needed == "slack":
             tool_data = await ToolAugmentedLLM.fetch_slack_context(entity_id)
+        elif tool_needed == "email":
+            tool_data = await ToolAugmentedLLM.fetch_email_context(entity_id)
 
         # Inject into context
         if tool_data and tool_data.get("available"):
@@ -240,6 +296,10 @@ class ToolAugmentedLLM:
             formatted += "Communication Activity:\n"
             formatted += f"- Total messages: {data.get('total_messages')}\n"
             formatted += f"- Average per day: {data.get('average_per_day'):.1f}\n"
+
+        elif tool_name == "email" and data:
+            formatted += "Email Inbox:\n"
+            formatted += f"- Unread emails: {data.get('unread_count', 0)}\n"
 
         formatted += "=== END TOOL DATA ===\n"
 

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.api.v1.endpoints import (
+    connections,
     engines,
     me,
     team,
@@ -46,6 +47,7 @@ api_router.include_router(roi.router, prefix="/roi", tags=["ROI"])
 api_router.include_router(demo.router, prefix="/demo", tags=["Demo"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 api_router.include_router(tools.router, prefix="/tools", tags=["External Tools"])
+api_router.include_router(connections.router, prefix="/connections", tags=["Connections"])
 api_router.include_router(workflows_router)
 api_router.include_router(admin_teams_router)
 api_router.include_router(admin_promote_router)

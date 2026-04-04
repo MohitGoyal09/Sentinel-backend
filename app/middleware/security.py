@@ -28,9 +28,11 @@ XSS_PATTERNS = [
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Skip security checks for static files and health checks
+        # Skip security checks for static files, health checks, and CORS preflight
         path = request.url.path
         if path in ("/", "/health", "/ready") or path.startswith("/static"):
+            return await call_next(request)
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         # Validate request body size (max 10MB)

@@ -12,10 +12,20 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 
+import requests as http_requests
+
 from app.config import get_settings
 
 logger = logging.getLogger("sentinel.composio")
 settings = get_settings()
+
+
+def _safe_entity(entity_id: str) -> str:
+    """Mask entity ID for logging — hides the email portion."""
+    if not entity_id or "@" not in entity_id:
+        return entity_id[:8] + "..." if len(entity_id) > 8 else entity_id
+    user_part = entity_id.split("@")[0]
+    return f"{user_part[:3]}***@***"
 
 # Graceful import — server must start even without composio configured
 try:
@@ -133,7 +143,7 @@ class ComposioClient:
             }
 
         except Exception as e:
-            logger.error(f"Calendar fetch failed for {entity_id}: {e}")
+            logger.error(f"Calendar fetch failed for {_safe_entity(entity_id)}: {e}")
             return {"success": False, "error": str(e), "events": [], "total_events": 0, "total_meeting_hours": 0}
 
     def _calculate_meeting_hours(self, events: List[Dict]) -> float:
@@ -272,6 +282,118 @@ class ComposioClient:
             return {"success": False, "error": str(e)}
 
     # ========================================================================
+    # EMAIL (GMAIL) INTEGRATION -- MULTI-STEP FETCH
+    # ========================================================================
+
+    async def get_emails(
+        self,
+        entity_id: str,
+        max_results: int = 10,
+        query: str = "",
+    ) -> Dict[str, Any]:
+        """Fetch emails with full details (subject, sender, date, snippet).
+
+        Performs a two-step fetch:
+          Step 1: List message IDs via GMAIL_LIST_MESSAGES
+          Step 2: For each message, get full details via GMAIL_GET_MESSAGE
+
+        Args:
+            entity_id: Composio entity/user ID.
+            max_results: Maximum number of emails to return.
+            query: Optional Gmail search query (e.g. "is:unread").
+
+        Returns:
+            Dict with success flag, list of detailed emails, and counts.
+        """
+        if not self.is_available():
+            return {"success": False, "error": "Composio not configured"}
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            def _sync() -> Dict[str, Any]:
+                # Step 1: List message IDs
+                list_args: Dict[str, Any] = {
+                    "max_results": max_results,
+                    "label_ids": ["INBOX"],
+                }
+                if query:
+                    list_args["q"] = query
+
+                list_result = self._execute(
+                    slug="GMAIL_LIST_MESSAGES",
+                    arguments=list_args,
+                    entity_id=entity_id,
+                )
+
+                if not list_result.get("successful", False):
+                    return {
+                        "success": False,
+                        "error": list_result.get("error", "Failed to list messages"),
+                    }
+
+                messages_data = list_result.get("data", {})
+                message_list = messages_data.get("messages", [])
+                total = messages_data.get("resultSizeEstimate", len(message_list))
+
+                # Step 2: Get full details for each message
+                detailed_emails: list[Dict[str, Any]] = []
+                for msg in message_list[:max_results]:
+                    msg_id = msg.get("id", "")
+                    if not msg_id:
+                        continue
+                    try:
+                        detail = self._execute(
+                            slug="GMAIL_GET_MESSAGE",
+                            arguments={"message_id": msg_id, "format": "metadata"},
+                            entity_id=entity_id,
+                        )
+                        if not detail.get("successful", False):
+                            continue
+
+                        payload = detail.get("data", {})
+
+                        # Extract headers (subject, from, date, to)
+                        headers: Dict[str, str] = {}
+                        for h in payload.get("payload", {}).get("headers", []):
+                            name = h.get("name", "").lower()
+                            if name in ("subject", "from", "date", "to"):
+                                headers[name] = h.get("value", "")
+
+                        # Determine read/unread status from labelIds
+                        label_ids = payload.get("labelIds", [])
+                        is_unread = "UNREAD" in label_ids
+
+                        detailed_emails.append({
+                            "id": msg_id,
+                            "subject": headers.get("subject", "(No Subject)"),
+                            "from": headers.get("from", "Unknown"),
+                            "date": headers.get("date", ""),
+                            "to": headers.get("to", ""),
+                            "snippet": payload.get("snippet", ""),
+                            "is_unread": is_unread,
+                        })
+                    except Exception:
+                        continue
+
+                return {
+                    "success": True,
+                    "emails": detailed_emails,
+                    "total_count": total,
+                    "fetched_count": len(detailed_emails),
+                }
+
+            return await loop.run_in_executor(None, _sync)
+
+        except Exception as e:
+            logger.error(
+                "get_emails failed for %s: %s",
+                _safe_entity(entity_id),
+                e,
+            )
+            return {"success": False, "error": str(e)}
+
+    # ========================================================================
     # CONNECTED ACCOUNTS
     # ========================================================================
 
@@ -287,8 +409,173 @@ class ComposioClient:
             )
             return list({acc.toolkit.slug for acc in accounts.items})
         except Exception as e:
-            logger.error(f"Failed to get connected integrations for {entity_id}: {e}")
+            logger.error(f"Failed to get connected integrations for {_safe_entity(entity_id)}: {e}")
             return []
+
+    # ========================================================================
+    # CONNECTION MANAGEMENT (OAuth)
+    # ========================================================================
+
+    async def initiate_connection(
+        self,
+        tool_slug: str,
+        entity_id: str,
+        callback_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Initiate an OAuth connection for a toolkit.
+
+        Uses the KaraX pattern:
+        1. Create an auth config with Composio-managed auth
+        2. Link the user to obtain a redirect URL for the OAuth flow
+
+        Args:
+            tool_slug: Toolkit identifier (e.g. 'gmail', 'slack')
+            entity_id: Composio user/entity ID
+            callback_url: URL Composio redirects to after OAuth completes
+
+        Returns:
+            Dict with success, redirect_url, connection_id, and optional no_auth flag
+        """
+        if not self.is_available():
+            return {"success": False, "error": "Composio not configured"}
+
+        def _sync() -> Dict[str, Any]:
+            toolkit = tool_slug.lower()
+
+            # Step 1: Create auth config for Composio-managed auth
+            try:
+                auth_config = self._composio.auth_configs.create(
+                    toolkit=toolkit,
+                    options={"type": "use_composio_managed_auth"},
+                )
+            except Exception as exc:
+                error_msg = str(exc).lower()
+                if "no auth" in error_msg or "noauth" in error_msg:
+                    return {"success": True, "redirect_url": None, "no_auth": True}
+                raise
+
+            # Step 2: Link user to the auth config
+            link_kwargs: Dict[str, Any] = {
+                "user_id": entity_id,
+                "auth_config_id": auth_config.id,
+            }
+            if callback_url:
+                link_kwargs["callback_url"] = callback_url
+
+            link_response = self._composio.connected_accounts.link(**link_kwargs)
+
+            # Step 3: Extract redirect URL and connection ID
+            redirect_url = None
+            connection_id = None
+
+            if hasattr(link_response, "redirect_url"):
+                redirect_url = link_response.redirect_url
+            elif hasattr(link_response, "redirectUrl"):
+                redirect_url = link_response.redirectUrl
+            elif isinstance(link_response, dict):
+                redirect_url = link_response.get("redirect_url") or link_response.get("redirectUrl")
+
+            if hasattr(link_response, "id"):
+                connection_id = link_response.id
+            elif isinstance(link_response, dict):
+                connection_id = link_response.get("id")
+
+            return {
+                "success": True,
+                "redirect_url": redirect_url,
+                "connection_id": connection_id,
+            }
+
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, _sync)
+        except Exception as e:
+            logger.error(f"initiate_connection failed for {tool_slug}/{_safe_entity(entity_id)}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def remove_connection(
+        self,
+        tool_slug: str,
+        entity_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Remove all connected accounts for a toolkit and user.
+
+        Uses the Composio REST API to list connected accounts, then
+        deletes those matching the target toolkit slug.
+
+        Args:
+            tool_slug: Toolkit identifier to disconnect (e.g. 'gmail')
+            entity_id: Composio user/entity ID
+
+        Returns:
+            Dict with success flag and deleted_count
+        """
+        if not self.is_available():
+            return {"success": False, "error": "Composio not configured", "deleted_count": 0}
+
+        def _sync() -> Dict[str, Any]:
+            api_key = settings.composio_api_key
+            base_api = "https://backend.composio.dev/api/v3/connected_accounts"
+            headers = {"x-api-key": api_key}
+            target = tool_slug.lower()
+            deleted = 0
+            cursor: Optional[str] = None
+
+            while True:
+                params: Dict[str, Any] = {
+                    "user_ids": [entity_id],
+                    "limit": 100,
+                }
+                if cursor:
+                    params["cursor"] = cursor
+
+                resp = http_requests.get(base_api, headers=headers, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+
+                items = data.get("items", data.get("data", []))
+                if not items:
+                    break
+
+                for acc in items:
+                    # Extract toolkit name from various response shapes
+                    toolkit_name = ""
+                    if "toolkit" in acc:
+                        tk = acc["toolkit"]
+                        if isinstance(tk, dict):
+                            toolkit_name = tk.get("slug", "").lower()
+                        elif isinstance(tk, str):
+                            toolkit_name = tk.lower()
+                    if not toolkit_name and "appName" in acc:
+                        toolkit_name = acc["appName"].lower()
+                    if not toolkit_name and "integrationId" in acc:
+                        toolkit_name = acc["integrationId"].lower()
+
+                    if toolkit_name == target:
+                        acc_id = acc.get("id")
+                        if acc_id:
+                            try:
+                                self._composio.connected_accounts.delete(acc_id)
+                                deleted += 1
+                            except Exception as del_err:
+                                logger.warning(
+                                    f"Failed to delete connected account {acc_id}: {del_err}"
+                                )
+
+                cursor = data.get("next_cursor")
+                if not cursor:
+                    break
+
+            return {"success": deleted > 0, "deleted_count": deleted}
+
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, _sync)
+        except Exception as e:
+            logger.error(f"remove_connection failed for {tool_slug}/{_safe_entity(entity_id)}: {e}")
+            return {"success": False, "error": str(e), "deleted_count": 0}
 
     # ========================================================================
     # GENERIC TOOL EXECUTION
@@ -315,6 +602,16 @@ class ComposioClient:
         # Map tool+action to Composio action slug
         action_map = {
             "calendar": {"list_events": "GOOGLECALENDAR_LIST_EVENTS"},
+            "email": {
+                "list_inbox": "GMAIL_LIST_MESSAGES",
+                "get_message": "GMAIL_GET_MESSAGE",
+                "send": "GMAIL_SEND_EMAIL",
+            },
+            "gmail": {
+                "list_inbox": "GMAIL_LIST_MESSAGES",
+                "get_message": "GMAIL_GET_MESSAGE",
+                "send": "GMAIL_SEND_EMAIL",
+            },
             "slack": {
                 "search_messages": "SLACK_SEARCH_MESSAGES",
                 "get_user": "SLACK_GET_USER_BY_ID",
@@ -322,6 +619,7 @@ class ComposioClient:
             "github": {
                 "list_commits": "GITHUB_LIST_COMMITS",
                 "get_pull_request": "GITHUB_GET_A_PULL_REQUEST",
+                "list_notifications": "GITHUB_LIST_NOTIFICATIONS",
             },
         }
 

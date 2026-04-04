@@ -102,49 +102,43 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
         total_users = 0
         recent_count = 0
 
+    csv_events = _pipeline_metrics["events_by_source"].get("csv", 0)
     connectors = [
         ConnectorInfo(
             name="Git",
-            status="connected",
+            status="not_configured",
             icon="git-branch",
-            events_ingested=_pipeline_metrics["events_by_source"].get("git", 0) + (total_events // 3),
-            last_sync=(datetime.utcnow() - timedelta(minutes=2)).isoformat(),
-            latency_ms=8.3,
-            description="Commit history, PR reviews, code frequency",
+            events_ingested=_pipeline_metrics["events_by_source"].get("git", 0),
+            description="Commit history, PR reviews, code frequency. Connect via Integrations.",
         ),
         ConnectorInfo(
             name="Slack",
-            status="connected",
+            status="not_configured",
             icon="message-square",
-            events_ingested=_pipeline_metrics["events_by_source"].get("slack", 0) + (total_events // 4),
-            last_sync=(datetime.utcnow() - timedelta(minutes=5)).isoformat(),
-            latency_ms=12.7,
-            description="Message patterns, response times, channel activity",
+            events_ingested=_pipeline_metrics["events_by_source"].get("slack", 0),
+            description="Message patterns, response times. Connect via Integrations.",
         ),
         ConnectorInfo(
             name="Jira",
-            status="connected",
+            status="not_configured",
             icon="clipboard-list",
-            events_ingested=_pipeline_metrics["events_by_source"].get("jira", 0) + (total_events // 5),
-            last_sync=(datetime.utcnow() - timedelta(minutes=8)).isoformat(),
-            latency_ms=15.2,
-            description="Sprint velocity, ticket lifecycle, workload",
+            events_ingested=_pipeline_metrics["events_by_source"].get("jira", 0),
+            description="Sprint velocity, ticket lifecycle. Connect via Integrations.",
         ),
         ConnectorInfo(
             name="Calendar",
-            status="pending",
+            status="not_configured",
             icon="calendar",
             events_ingested=0,
-            description="Meeting load, focus time, after-hours meetings",
+            description="Meeting load, focus time. Connect via Integrations.",
         ),
         ConnectorInfo(
             name="CSV Upload",
             status="connected",
             icon="upload",
-            events_ingested=_pipeline_metrics["events_by_source"].get("csv", 0),
-            last_sync=datetime.utcnow().isoformat(),
-            latency_ms=2.1,
-            description="Manual data import for onboarding",
+            events_ingested=csv_events,
+            last_sync=datetime.utcnow().isoformat() if csv_events > 0 else None,
+            description="Manual data import — always available.",
         ),
     ]
 
@@ -200,7 +194,7 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
             "total_events": total_events + _pipeline_metrics["total_ingested"],
             "total_users": total_users,
             "events_per_hour": recent_count + _pipeline_metrics.get("events_last_hour", 0),
-            "avg_latency_ms": 11.4,
+            "avg_latency_ms": 0.0,
             "error_rate": round(
                 _pipeline_metrics["total_errors"]
                 / max(_pipeline_metrics["total_ingested"] + total_events, 1)

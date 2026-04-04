@@ -14,6 +14,7 @@ from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, get_tenant_member, require_role
 from app.services.llm import llm_service
 from app.services.sentinel_chat import sentinel_chat_service
+from app.services.orchestrator import sentinel_orchestrator
 from app.services.chat_history_service import ChatHistoryService
 from app.models.chat_history import ChatSession
 from app.services.permission_service import PermissionService
@@ -1434,10 +1435,46 @@ async def chat_stream(
     async def _stream_and_persist() -> AsyncGenerator[str, None]:
         """Wrap the inner stream to capture accumulated text for persistence."""
         accumulated_response: list[str] = []
+        accumulated_tool_events: list[dict] = []
         conversation_id: Optional[str] = None
 
-        async for chunk in sentinel_chat_service.respond_stream(
-            effective_request, current_user, tenant_id, db
+        # Build conversation history from session.
+        # We load ALL persisted turns so every agent receives the full
+        # context window, including previous tool responses stored as
+        # assistant turns (e.g. "I found 201 emails…" from a prior
+        # check-my-emails call).  Each agent then slices to its own
+        # _MAX_HISTORY_TURNS cap before sending to the LLM.
+        history: list[dict] = []
+        if effective_session_id:
+            try:
+                turns = chat_history_svc.get_conversation_turns(
+                    user_hash=member.user_hash,
+                    tenant_id=tenant_id,
+                    conversation_id=effective_session_id,
+                )
+                if turns:
+                    history = [
+                        {"role": t.role, "content": t.content}
+                        for t in turns
+                        if t.role in ("user", "assistant")
+                        and t.content
+                        and (getattr(t, "type", "message") or "message") == "message"
+                    ]
+            except Exception as history_err:
+                logger.warning(
+                    "Failed to load conversation history for session %s: %s",
+                    effective_session_id,
+                    history_err,
+                )
+
+        async for chunk in sentinel_orchestrator.process_stream(
+            message=request.message,
+            user=current_user,
+            member=member,
+            tenant_id=tenant_id,
+            session_id=effective_session_id,
+            conversation_history=history,
+            db=db,
         ):
             # Rewrite the 'done' event to include session_id
             try:
@@ -1446,6 +1483,10 @@ async def chat_stream(
                     event_type = payload.get("type")
                     if event_type == "token":
                         accumulated_response.append(payload.get("content", ""))
+                    elif event_type == "tool_call":
+                        accumulated_tool_events.append(payload)
+                    elif event_type == "connection_link":
+                        accumulated_tool_events.append(payload)
                     elif event_type == "done":
                         conversation_id = payload.get("conversation_id")
                         payload["session_id"] = effective_session_id
@@ -1466,6 +1507,21 @@ async def chat_stream(
                     member.user_hash, tenant_id, resolved_conv_id,
                     "user", request.message,
                 )
+
+                # Persist tool_call and connection_link events so they
+                # survive page reloads (Issue 3: tool cards disappear).
+                for tool_evt in accumulated_tool_events:
+                    evt_type = tool_evt.get("type", "tool_call")
+                    chat_history_svc.persist_turn(
+                        member.user_hash,
+                        tenant_id,
+                        resolved_conv_id,
+                        "assistant",
+                        json.dumps(tool_evt),
+                        metadata=tool_evt,
+                        turn_type=evt_type,
+                    )
+
                 if full_response:
                     chat_history_svc.persist_turn(
                         member.user_hash, tenant_id, resolved_conv_id,
@@ -1517,7 +1573,7 @@ async def chat_stream(
 
 @router.get("/chat/history")
 def get_chat_history(
-    limit: int = QueryParam(default=20, le=50),
+    limit: int = QueryParam(default=20, ge=1, le=200),
     member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
@@ -1596,7 +1652,7 @@ def create_chat_session(
 
 @router.get("/chat/sessions")
 def list_chat_sessions(
-    limit: int = QueryParam(default=20, ge=1, le=50),
+    limit: int = QueryParam(default=20, ge=1, le=200),
     offset: int = QueryParam(default=0, ge=0),
     search: Optional[str] = QueryParam(default=None),
     member: TenantMember = Depends(get_tenant_member),

@@ -36,6 +36,8 @@ class ChatHistoryService:
         role: str,
         content: str,
         metadata: Optional[dict] = None,
+        session_id: Optional[str] = None,
+        turn_type: str = "message",
     ) -> ChatHistory:
         """Insert a single chat turn and flush it to the session.
 
@@ -46,21 +48,39 @@ class ChatHistoryService:
             role:             "user" or "assistant".
             content:          The full message text.
             metadata:         Optional arbitrary JSON metadata.
+            session_id:       Optional ChatSession FK for session-based lookups.
+            turn_type:        Turn type — "message", "tool_call", "connection_link", etc.
 
         Returns:
             The newly created ``ChatHistory`` ORM object.
         """
+        effective_session_id = session_id or conversation_id
         turn = ChatHistory(
             user_hash=user_hash,
             tenant_id=tenant_id,
             conversation_id=conversation_id,
+            session_id=effective_session_id,
             role=role,
+            type=turn_type,
             content=content,
             created_at=datetime.utcnow(),
             metadata_=metadata,
         )
         self.db.add(turn)
         self.db.flush()
+
+        # Touch the parent session's updated_at so sidebar ordering stays
+        # accurate (most-recently-active session surfaces first).
+        if effective_session_id:
+            parent_session = (
+                self.db.query(ChatSession)
+                .filter(ChatSession.id == effective_session_id)
+                .first()
+            )
+            if parent_session:
+                parent_session.updated_at = datetime.utcnow()
+                self.db.flush()
+
         return turn
 
     # ------------------------------------------------------------------

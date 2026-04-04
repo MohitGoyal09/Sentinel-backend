@@ -46,6 +46,7 @@ class TenantMember(Base):
         String(64), ForeignKey("identity.users.user_hash"), nullable=False, index=True
     )
     role = Column(String(20), default="employee")
+    display_name = Column(String(100), nullable=True)
     team_id = Column(
         UUID(as_uuid=True),
         ForeignKey("identity.teams.id", ondelete="SET NULL"),

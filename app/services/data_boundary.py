@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.analytics import RiskScore
+from app.models.identity import UserIdentity
 from app.models.tenant import TenantMember
 
 
@@ -118,24 +119,38 @@ class DataBoundaryEnforcer:
     # ------------------------------------------------------------------
 
     def _get_user_data(self, user_hash: str) -> dict:
-        """Fetch the caller's own risk data from RiskScore."""
+        """Fetch the caller's own risk + centrality data."""
+        from app.models.analytics import CentralityScore
+
         score = (
             self.db.query(RiskScore)
             .filter(RiskScore.user_hash == user_hash)
             .first()
         )
-        if score is None:
-            return {}
+        centrality = (
+            self.db.query(CentralityScore)
+            .filter(CentralityScore.user_hash == user_hash)
+            .first()
+        )
 
-        return {
-            "risk_level": score.risk_level,
-            "velocity": score.velocity,
-            "confidence": score.confidence,
-            "thwarted_belongingness": score.thwarted_belongingness,
-            "updated_at": (
-                score.updated_at.isoformat() if score.updated_at else None
-            ),
-        }
+        data: dict = {}
+        if score is not None:
+            data.update({
+                "risk_level": score.risk_level,
+                "velocity": score.velocity,
+                "confidence": score.confidence,
+                "thwarted_belongingness": score.thwarted_belongingness,
+                "updated_at": (
+                    score.updated_at.isoformat() if score.updated_at else None
+                ),
+            })
+        if centrality is not None:
+            data.update({
+                "betweenness": centrality.betweenness,
+                "eigenvector": centrality.eigenvector,
+                "unblocking_count": centrality.unblocking_count,
+            })
+        return data
 
     def _get_team_aggregates(self, team_id: str, tenant_id: str) -> dict:
         """Return anonymised aggregate stats for the given team.
@@ -186,7 +201,13 @@ class DataBoundaryEnforcer:
         }
 
     def _get_org_aggregates(self, tenant_id: str) -> dict:
-        """Return org-wide aggregate stats for *tenant_id*."""
+        """Return org-wide stats for *tenant_id*, including individual employee details.
+
+        Admins get full visibility: aggregate counts PLUS a list of all
+        employees with their names, roles, risk levels, and key metrics.
+        """
+        from app.core.security import privacy
+
         members = (
             self.db.query(TenantMember)
             .filter(TenantMember.tenant_id == tenant_id)
@@ -206,12 +227,86 @@ class DataBoundaryEnforcer:
             .all()
         ) if member_hashes else []
 
+        score_map = {s.user_hash: s for s in scores}
+
         at_risk_count = sum(
-            1 for s in scores if s.risk_level in ("HIGH", "CRITICAL")
+            1 for s in scores if s.risk_level in ("ELEVATED", "HIGH", "CRITICAL")
+        )
+        critical_count = sum(
+            1 for s in scores if s.risk_level == "CRITICAL"
+        )
+
+        # Build individual employee list for admin context
+        employees_detail = []
+        for m in members:
+            risk = score_map.get(m.user_hash)
+
+            # Use display_name from TenantMember (populated by seed/invite)
+            # Fall back to decrypting email if display_name is not set
+            name = m.display_name if hasattr(m, "display_name") and m.display_name else None
+            if not name:
+                identity = (
+                    self.db.query(UserIdentity)
+                    .filter(UserIdentity.user_hash == m.user_hash)
+                    .first()
+                )
+                if identity and identity.email_encrypted:
+                    try:
+                        email = privacy.decrypt(identity.email_encrypted)
+                        name = email.split("@")[0].replace(".", " ").title() if email else m.user_hash[:8]
+                    except Exception:
+                        name = m.user_hash[:8]
+                else:
+                    name = m.user_hash[:8]
+
+            employees_detail.append({
+                "name": name,
+                "role": m.role,
+                "risk_level": risk.risk_level if risk else "UNKNOWN",
+                "velocity": round(risk.velocity, 2) if risk and risk.velocity else 0.0,
+                "confidence": round(risk.confidence, 2) if risk and risk.confidence else 0.0,
+            })
+
+        # Sort: critical first, then elevated, then low
+        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "LOW": 3, "UNKNOWN": 4}
+        employees_detail.sort(key=lambda e: risk_order.get(e["risk_level"], 5))
+
+        # Team culture summary: graph fragmentation
+        from app.models.analytics import GraphEdge
+
+        edges = (
+            self.db.query(GraphEdge)
+            .filter(GraphEdge.tenant_id == tenant_id)
+            .all()
+        )
+        if edges:
+            import networkx as nx
+
+            G = nx.Graph()
+            for e in edges:
+                G.add_edge(e.source_hash, e.target_hash, weight=e.weight or 1.0)
+            fragmentation = (
+                round(1.0 - nx.average_clustering(G), 2) if len(G) > 0 else 0.0
+            )
+        else:
+            fragmentation = 0.0
+
+        avg_velocity = (
+            round(
+                sum(e["velocity"] for e in employees_detail) / len(employees_detail),
+                2,
+            )
+            if employees_detail
+            else 0.0
         )
 
         return {
             "total_employees": total_employees,
             "total_teams": total_teams,
             "at_risk_count": at_risk_count,
+            "critical_count": critical_count,
+            "risk_percentage": round(at_risk_count / total_employees * 100, 1) if total_employees else 0,
+            "employees": employees_detail,
+            "fragmentation": fragmentation,
+            "avg_velocity": avg_velocity,
         }

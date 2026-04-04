@@ -11,10 +11,11 @@ settings = get_settings()
 # SQLAlchemy engine for ORM operations (using PostgreSQL connection)
 engine = create_engine(
     settings.database_url,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=3,
+    max_overflow=5,
     pool_pre_ping=True,
-    pool_recycle=3600
+    pool_recycle=300,
+    pool_timeout=10,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
