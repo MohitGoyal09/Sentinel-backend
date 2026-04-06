@@ -33,6 +33,12 @@ class CultureThermometer:
         
         avg_velocity = np.mean([r.velocity for r in risks]) if risks else 0
         critical_count = sum(1 for r in risks if r.risk_level == "CRITICAL")
+
+        # Team attrition forecast from individual probabilities
+        attrition_probs = [r.attrition_probability or 0.0 for r in risks]
+        avg_attrition = float(np.mean(attrition_probs)) if attrition_probs else 0.0
+        high_risk_30d = sum(1 for p in attrition_probs if p > 0.6)
+        high_risk_60d = sum(1 for p in attrition_probs if p > 0.4)
         
         # 2. Social graph fragmentation
         fragmentation = self._calculate_fragmentation(team_hashes)
@@ -56,6 +62,12 @@ class CultureThermometer:
                 "critical_members": critical_count,
                 "graph_fragmentation": round(fragmentation, 2),
                 "comm_decay_rate": round(comm_decay, 2)
+            },
+            "attrition_forecast": {
+                "avg_probability": round(avg_attrition, 2),
+                "high_risk_30d": high_risk_30d,
+                "high_risk_60d": high_risk_60d,
+                "total_members": len(team_hashes),
             },
             "recommendation": self._recommendation(risk)
         }

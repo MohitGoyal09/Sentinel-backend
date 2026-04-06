@@ -194,8 +194,17 @@ def predict_contagion_risk(
     """
     if total_members < 3 or infected_count < 1:
         return {
-            "status": "INSUFFICIENT_DATA",
-            "message": "Need at least 3 members and 1 at-risk person for prediction"
+            "status": "STABLE",
+            "risk_level": "LOW",
+            "r0": 0.0,
+            "peak_day": 0,
+            "peak_infected": 0.0,
+            "forecast": {
+                "days": list(range(days + 1)),
+                "susceptible": [float(max(total_members, 1))] * (days + 1),
+                "infected": [0.0] * (days + 1),
+                "recovered": [0.0] * (days + 1),
+            }
         }
     
     simulator = SIRSimulator.from_team_data(

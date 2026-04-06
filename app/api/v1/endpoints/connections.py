@@ -9,7 +9,7 @@ status, and disconnecting integrations.
 import logging
 from urllib.parse import urlencode, quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -377,3 +377,24 @@ async def disconnect_tool(
         "toolkit_name": body.toolkit_name,
         "message": "Disconnected successfully.",
     }
+
+
+@router.post("/post-connect-sync")
+async def post_connect_sync(
+    background_tasks: BackgroundTasks,
+    user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
+    db: Session = Depends(get_db),
+):
+    """Called by frontend after OAuth completes. Triggers 7-day backfill in background."""
+    entity_id = _get_entity_id(user)
+    if not entity_id:
+        raise HTTPException(status_code=400, detail="Unable to resolve user identity")
+
+    from app.services.data_sync import background_sync
+    background_tasks.add_task(
+        background_sync, entity_id, member.user_hash, str(member.tenant_id)
+    )
+
+    logger.info("Post-connect sync scheduled for entity=%s", _safe_entity_log(entity_id))
+    return {"success": True, "message": "Data sync started in background. Check the dashboard in ~30 seconds."}

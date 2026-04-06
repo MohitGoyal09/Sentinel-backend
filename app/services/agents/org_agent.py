@@ -31,6 +31,46 @@ logger = logging.getLogger("sentinel.agents.org")
 
 
 # ---------------------------------------------------------------------------
+# Manager Coaching Mode instructions (appended to the manager system prompt)
+# ---------------------------------------------------------------------------
+
+_MANAGER_COACHING_INSTRUCTIONS = """
+
+## COACHING MODE
+
+Your team members and their data are listed in the context below. When asked about a specific person, match their name (even partial/first name) to the team member data.
+
+When a manager asks about how to approach a conversation with a team member, prepare a 1:1 agenda, or requests coaching advice for a specific person:
+
+1. Look up that person's data from the team context provided
+2. Generate a structured coaching response:
+
+### Conversation Guide for [Employee Name]
+
+**Risk Context:** [risk_level], attrition probability [X]%, velocity [Y]
+
+**3 Conversation Openers** (empathetic, NOT mentioning monitoring/tracking):
+1. [opener based on their indicators]
+2. [opener based on their indicators]
+3. [opener based on their indicators]
+
+**Key Points to Address:**
+- [based on their specific indicators and risk signals]
+
+**Things to AVOID Saying:**
+- Don't mention that you're tracking their work hours or patterns
+- Don't use the word "burnout" directly -- ask about their experience instead
+- Don't make promises you can't keep about workload changes
+
+**Suggested Action Items:**
+1. [specific, actionable step]
+2. [specific, actionable step]
+3. [specific, actionable step]
+
+Important: Use warm, human language. Reference specific signals (like "I noticed your schedule has been unusual lately" rather than "your circadian entropy is 2.1"). Translate technical metrics into human observations. Never reveal the existence of monitoring systems or tracking tools."""
+
+
+# ---------------------------------------------------------------------------
 # Context conversion helpers
 # ---------------------------------------------------------------------------
 
@@ -90,10 +130,39 @@ def _format_context(context: dict, role: str) -> str:
                 f"\n- Team Members At Risk: {context.get('team_at_risk_count', 0)}"
                 f"\n- Critical Cases: {context.get('team_critical_count', 0)}"
             )
+
+        # Per-member coaching detail
+        members = context.get("team_team_members", [])
+        members_str = ""
+        if members:
+            members_str = "\n\n--- TEAM MEMBER DETAILS (sorted by risk) ---"
+            for emp in members[:20]:
+                indicators = emp.get("indicators", {})
+                indicator_flags = []
+                if indicators.get("chaotic_hours"):
+                    indicator_flags.append("chaotic_hours")
+                if indicators.get("social_withdrawal"):
+                    indicator_flags.append("social_withdrawal")
+                if indicators.get("sustained_intensity"):
+                    indicator_flags.append("sustained_intensity")
+                indicator_str = (
+                    ", ".join(indicator_flags) if indicator_flags else "none"
+                )
+                members_str += (
+                    f"\n  {emp['name']} | Role: {emp['role']} | "
+                    f"Risk: {emp['risk_level']} | "
+                    f"Velocity: {emp['velocity']} | "
+                    f"Attrition: {emp['attrition_probability']}% | "
+                    f"Belongingness: {emp['belongingness_score']} | "
+                    f"Indicators: [{indicator_str}]"
+                )
+            if len(members) > 20:
+                members_str += f"\n  ... and {len(members) - 20} more members"
+
         return (
             f"- Your Role: Manager\n"
             f"- Personal Metrics: Risk {context['risk_level']}, "
-            f"Velocity {context['velocity']:.2f}{team_str}"
+            f"Velocity {context['velocity']:.2f}{team_str}{members_str}"
         )
 
     if role == "admin":
@@ -379,8 +448,13 @@ class OrgAgent:
             role, ROLE_SYSTEM_PROMPTS["employee"]
         )
         context_str = _format_context(context, role)
+
+        coaching_section = ""
+        if role == "manager":
+            coaching_section = _MANAGER_COACHING_INSTRUCTIONS
+
         full_system = (
-            f"{system_prompt}\n\nUSER CONTEXT:\n{context_str}"
+            f"{system_prompt}{coaching_section}\n\nUSER CONTEXT:\n{context_str}"
             f"{_SUGGESTION_INSTRUCTION}"
         )
 

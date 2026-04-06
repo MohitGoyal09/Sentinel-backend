@@ -394,7 +394,7 @@ def get_nudge(
             import re
             email = privacy.decrypt(user_identity.email_encrypted)
             user_name = email.split("@")[0].replace(".", " ").title()
-            user_name = re.sub(r'["\n\r{}\\]', '', user_name)[:50]
+            user_name = re.sub(r'[^a-zA-Z0-9\s\.\-]', '', user_name)[:50]
         except Exception:
             logger.warning("Failed to decrypt email for user_hash=%s; using fallback name", user_hash)
 
@@ -591,7 +591,7 @@ def list_events(
 def list_users(
     db: Session = Depends(get_db),
     skip: int = 0,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
     member: TenantMember = Depends(get_tenant_member),
 ):
     """
@@ -644,14 +644,24 @@ def list_users(
     )
 
     # Build base query
-    query = db.query(
-        UserIdentity.user_hash,
-        UserIdentity.email_encrypted,
-        latest_risk.c.risk_level,
-        latest_risk.c.velocity,
-        latest_risk.c.confidence,
-        latest_risk.c.updated_at,
-    ).outerjoin(latest_risk, UserIdentity.user_hash == latest_risk.c.user_hash)
+    query = (
+        db.query(
+            UserIdentity.user_hash,
+            UserIdentity.email_encrypted,
+            latest_risk.c.risk_level,
+            latest_risk.c.velocity,
+            latest_risk.c.confidence,
+            latest_risk.c.updated_at,
+            TenantMember.role,
+            TenantMember.display_name,
+        )
+        .outerjoin(latest_risk, UserIdentity.user_hash == latest_risk.c.user_hash)
+        .outerjoin(
+            TenantMember,
+            (TenantMember.user_hash == UserIdentity.user_hash)
+            & (TenantMember.tenant_id == member.tenant_id),
+        )
+    )
 
     # Apply role-based filtering BEFORE pagination
     if team_member_hashes:
@@ -661,23 +671,33 @@ def list_users(
 
     result = []
     for user in users:
-        user_hash, email_encrypted, risk_level, velocity, confidence, updated_at = user
+        (
+            user_hash, email_encrypted,
+            risk_level, velocity, confidence, updated_at,
+            tm_role, tm_display_name,
+        ) = user
 
-        # Attempt to derive name from encrypted email
-        name = f"User {user_hash[:4]}"
-        role = "Engineer"
-        try:
-            # Try proper decryption
-            decrypted = privacy.decrypt(email_encrypted)
-            name = decrypted.split("@")[0].title()
-        except Exception:
-            # Handle mock seeded data (fallback)
+        role = (tm_role or "employee").title()
+
+        # Prefer display_name from TenantMember, fall back to email-derived name
+        name = None
+        if tm_display_name:
+            name = tm_display_name
+        if not name:
             try:
-                raw = email_encrypted.decode()
-                if "encrypted_" in raw:
-                    name = raw.replace("encrypted_", "").split("@")[0].title()
+                # Try proper decryption
+                decrypted = privacy.decrypt(email_encrypted)
+                name = decrypted.split("@")[0].title()
             except Exception:
-                pass
+                # Handle mock seeded data (fallback)
+                try:
+                    raw = email_encrypted.decode()
+                    if "encrypted_" in raw:
+                        name = raw.replace("encrypted_", "").split("@")[0].title()
+                except Exception:
+                    pass
+        if not name:
+            name = f"User {user_hash[:4]}"
 
         result.append(
             {
@@ -810,6 +830,60 @@ def get_global_network(
     """Get global network metrics"""
     engine = TalentScout(db)
     return {"success": True, "data": engine.get_network_metrics()}
+
+
+# ============ INDUSTRY BENCHMARKS ============
+
+
+@router.get("/benchmarks")
+def get_industry_benchmarks(
+    industry: str = Query(default="tech", description="Industry to compare against"),
+    db: Session = Depends(get_db),
+    member: TenantMember = Depends(get_tenant_member),
+):
+    """Get industry benchmark data for comparison"""
+    from app.models.analytics import RiskScore
+
+    engine = SafetyValve(db)
+    benchmarks = engine.get_benchmarks(industry)
+
+    # Calculate team actual burnout rate
+    if member.role == "admin":
+        tenant_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(tenant_id=member.tenant_id).all()
+        ]
+    elif member.role == "manager":
+        team_member_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(
+                team_id=member.team_id, tenant_id=member.tenant_id
+            ).all()
+        ] if member.team_id else []
+        tenant_hashes = [member.user_hash] + team_member_hashes
+    else:
+        tenant_hashes = [member.user_hash]
+
+    risk_scores = db.query(RiskScore).filter(RiskScore.user_hash.in_(tenant_hashes)).all()
+    total = len(risk_scores) or 1
+    elevated_or_critical = sum(
+        1 for r in risk_scores if r.risk_level in ["ELEVATED", "CRITICAL"]
+    )
+    team_burnout_rate = round(elevated_or_critical / total, 2)
+    team_avg_velocity = round(sum(r.velocity or 0 for r in risk_scores) / total, 2)
+    team_avg_belong = round(
+        sum(r.thwarted_belongingness or 0.5 for r in risk_scores) / total, 2
+    )
+
+    return {
+        "success": True,
+        "data": {
+            **benchmarks,
+            "team_burnout_rate": team_burnout_rate,
+            "team_avg_velocity": team_avg_velocity,
+            "team_avg_belongingness": team_avg_belong,
+        }
+    }
 
 
 # ============ ADMIN / SEED ============

@@ -1,4 +1,7 @@
 import logging
+from collections import defaultdict
+import time as _time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -22,6 +25,23 @@ from app.schemas.auth import (
 logger = logging.getLogger("sentinel.auth")
 
 router = APIRouter()
+
+# Simple in-memory rate limiter for auth endpoints
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_RATE_LIMIT_WINDOW = 300  # 5 minutes
+_RATE_LIMIT_MAX = 10  # max attempts per window
+
+
+def _check_rate_limit(identifier: str) -> bool:
+    """Returns True if rate limited (should block)."""
+    now = _time.time()
+    attempts = _login_attempts[identifier]
+    # Clean old entries
+    _login_attempts[identifier] = [t for t in attempts if now - t < _RATE_LIMIT_WINDOW]
+    if len(_login_attempts[identifier]) >= _RATE_LIMIT_MAX:
+        return True
+    _login_attempts[identifier].append(now)
+    return False
 
 
 class AcceptInviteRequest(BaseModel):
@@ -176,7 +196,15 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db: Session = Depends(get_db)):
+async def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    # Rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    if _check_rate_limit(f"login:{client_ip}:{body.email}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please try again in 5 minutes.",
+        )
+
     try:
         supabase = get_supabase_client()
         auth_result = supabase.auth.sign_in_with_password(
@@ -235,17 +263,13 @@ async def login(body: LoginRequest, db: Session = Depends(get_db)):
             }
         )
 
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (including our rate limit 429)
     except Exception as e:
-        logger.exception("Login failed")
+        logger.error("Login failed with unexpected error: %s", e)
         raise HTTPException(
-            status_code=401,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "login_failed",
-                    "message": "Invalid email or password",
-                },
-            },
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during login",
         )
 
 
@@ -275,15 +299,30 @@ async def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.post("/logout")
 async def logout(
-    user: UserIdentity = Depends(get_current_user_identity),
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
 ):
+    """Logout and invalidate server-side session."""
     try:
-        # Note: Client-side Supabase auth handles session invalidation
-        # This endpoint exists for API consistency and audit logging
-        logger.info("User logged out: %s", user.user_hash)
-        return success_response({"message": "Logged out successfully"})
-    except Exception:
-        return success_response({"message": "Logged out successfully"})
+        # Client-side Supabase auth handles token invalidation via supabase.auth.signOut()
+        # Server-side, we log the action for audit
+        from app.services.audit_service import AuditService, AuditAction
+
+        audit = AuditService(db)
+        primary_member = db.query(TenantMember).filter_by(user_hash=current_user.user_hash).first()
+        if primary_member:
+            audit.log(
+                actor_hash=primary_member.user_hash,
+                actor_role=primary_member.role,
+                action=AuditAction.USER_LOGGED_OUT,
+                details={"method": "server_logout"},
+                tenant_id=primary_member.tenant_id,
+            )
+            db.commit()
+    except Exception as e:
+        logger.warning("Server-side logout cleanup failed: %s", e)
+
+    return {"success": True, "message": "Logged out successfully"}
 
 
 @router.post("/forgot-password")

@@ -35,14 +35,18 @@ class SlackConnector(BaseConnector):
 
         return NormalizedEvent(
             source="slack",
-            event_type="message",
+            event_type="slack_message",
             user_identifier=msg_data.get("user_email", "unknown"),
             timestamp=datetime.fromisoformat(str(timestamp)),
             metadata={
                 "channel": msg_data.get("channel", "general"),
                 "is_reply": msg_data.get("is_reply", False),
                 "reaction_count": msg_data.get("reaction_count", 0),
+                "mentions_others": bool(msg_data.get("mentions", [])),
                 "hour_of_day": hour,
+                "after_hours": hour >= 21 or hour <= 6,
+                "source": "slack",
+                "source_id": msg_data.get("ts", ""),
             },
             risk_signal=risk_signal,
         )

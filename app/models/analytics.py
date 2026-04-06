@@ -51,6 +51,7 @@ class RiskScore(Base):
     risk_level = Column(String(20))
     confidence = Column(Float)
     thwarted_belongingness = Column(Float)  # Psychological metric (IPT theory)
+    attrition_probability = Column(Float, default=0.0)  # Composite attrition score
     updated_at = Column(DateTime, default=datetime.utcnow)
 
     @property
@@ -108,6 +109,7 @@ class RiskHistory(Base):
     velocity = Column(Float)
     confidence = Column(Float)
     belongingness_score = Column(Float, default=0.0)
+    attrition_probability = Column(Float, default=0.0)  # Composite attrition score
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 

@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -25,6 +25,8 @@ from app.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger("sentinel.ingestion_api")
 router = APIRouter()
+
+MAX_CSV_SIZE = 10 * 1024 * 1024  # 10MB
 
 # ============================================
 # In-Memory Pipeline Metrics (per-process)
@@ -211,7 +213,7 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
 
 
 @router.post("/upload-csv")
-async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
+async def upload_csv(file: UploadFile = File(...), background_tasks: BackgroundTasks = None, db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
     """
     Upload a CSV file to ingest behavioral data.
     Expected columns: timestamp, user_email, event_type, source
@@ -220,9 +222,14 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are accepted")
 
-    # Read and decode
+    # Size check -- read in chunks to avoid memory exhaustion
     try:
-        content = await file.read()
+        content = await file.read(MAX_CSV_SIZE + 1)
+        if len(content) > MAX_CSV_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large. Maximum size is {MAX_CSV_SIZE // (1024*1024)}MB"
+            )
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
@@ -247,6 +254,7 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
     ingested = 0
     errors = []
     ingested_events = []
+    ingested_user_hashes: set = set()
 
     reader = csv.DictReader(io.StringIO(text))
     for i, row in enumerate(reader, start=2):
@@ -311,6 +319,7 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
             )
             db.add(db_event)
             ingested += 1
+            ingested_user_hashes.add(user_hash)
 
             latency = round((time.time() - start_time) * 1000, 2)
 
@@ -344,7 +353,8 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
                 _pipeline_metrics["recent_events"] = _pipeline_metrics["recent_events"][-100:]
 
         except Exception as e:
-            errors.append(f"Row {i}: {str(e)}")
+            logger.debug("CSV row %d processing error: %s", i, e)
+            errors.append(f"Row {i}: processing failed")
             _pipeline_metrics["total_errors"] += 1
             _pipeline_metrics["stage_metrics"]["Collection"]["error_count"] += 1
 
@@ -355,6 +365,17 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=500, detail="Failed to persist events")
+
+    # Trigger engine recomputation for ingested users
+    if ingested > 0 and background_tasks and ingested_user_hashes:
+        from app.api.v1.endpoints.engines import run_all_engines
+
+        for uh in ingested_user_hashes:
+            background_tasks.add_task(run_all_engines, uh)
+
+        now_iso = datetime.utcnow().isoformat()
+        _pipeline_metrics["stage_metrics"]["Engine Processing"]["processed"] += len(ingested_user_hashes)
+        _pipeline_metrics["stage_metrics"]["Engine Processing"]["last_processed_at"] = now_iso
 
     # Audit log for CSV upload
     audit = AuditService(db)
@@ -382,6 +403,33 @@ async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         "error_details": errors[:20],  # Return first 20 errors
         "ingested_events": ingested_events[:30],  # Return first 30 for live feed
     }
+
+
+@router.post("/sync")
+async def sync_connected_tools(
+    source: str = Query(default="all", description="github, slack, or all"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    user=Depends(require_role("admin", "manager")),
+):
+    """Manually trigger data sync for connected tools."""
+    from app.services.data_sync import background_sync
+    from app.api.v1.endpoints.connections import _get_entity_id as get_eid
+    from app.config import get_settings
+
+    # Build entity_id from user's email
+    settings = get_settings()
+    email = privacy.decrypt(user.email_encrypted) if hasattr(user, 'email_encrypted') else ""
+    entity_id = f"{email}-{settings.environment}" if email else ""
+
+    if not entity_id:
+        raise HTTPException(status_code=400, detail="Unable to resolve user identity for sync")
+
+    background_tasks.add_task(
+        background_sync, entity_id, user.user_hash, str(user.tenant_id)
+    )
+
+    return {"success": True, "message": f"Syncing {source} data in background. Check back in ~30 seconds."}
 
 
 @router.get("/sample-csv")

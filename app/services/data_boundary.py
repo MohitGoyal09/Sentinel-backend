@@ -153,11 +153,15 @@ class DataBoundaryEnforcer:
         return data
 
     def _get_team_aggregates(self, team_id: str, tenant_id: str) -> dict:
-        """Return anonymised aggregate stats for the given team.
+        """Return aggregate stats and per-member coaching data for the given team.
 
-        Individual ``user_hash`` values are NEVER included in the result.
+        Per-member entries include names and risk signals to support
+        manager coaching features.  Individual ``user_hash`` values are
+        NEVER included in the result.
         Only members who belong to *tenant_id* and *team_id* are considered.
         """
+        from app.core.security import privacy
+
         members = (
             self.db.query(TenantMember)
             .filter(
@@ -178,9 +182,11 @@ class DataBoundaryEnforcer:
             .all()
         )
 
+        score_map = {s.user_hash: s for s in scores}
+
         team_size = len(members)
         at_risk_count = sum(
-            1 for s in scores if s.risk_level in ("HIGH", "CRITICAL")
+            1 for s in scores if s.risk_level in ("HIGH", "CRITICAL", "ELEVATED")
         )
 
         velocities = [s.velocity for s in scores if s.velocity is not None]
@@ -193,11 +199,76 @@ class DataBoundaryEnforcer:
             if s.risk_level in risk_distribution:
                 risk_distribution[s.risk_level] += 1
 
+        # Build per-member coaching detail for manager context
+        team_members_detail: list[dict] = []
+        for m in members:
+            risk = score_map.get(m.user_hash)
+
+            # Resolve display name (same pattern as _get_org_aggregates)
+            name = (
+                m.display_name
+                if hasattr(m, "display_name") and m.display_name
+                else None
+            )
+            if not name:
+                identity = (
+                    self.db.query(UserIdentity)
+                    .filter(UserIdentity.user_hash == m.user_hash)
+                    .first()
+                )
+                if identity and identity.email_encrypted:
+                    try:
+                        email = privacy.decrypt(identity.email_encrypted)
+                        name = (
+                            email.split("@")[0].replace(".", " ").title()
+                            if email
+                            else m.user_hash[:8]
+                        )
+                    except Exception:
+                        name = m.user_hash[:8]
+                else:
+                    name = m.user_hash[:8]
+
+            velocity_val = round(risk.velocity, 2) if risk and risk.velocity else 0.0
+            belongingness_val = (
+                round(risk.thwarted_belongingness, 2)
+                if risk and risk.thwarted_belongingness is not None
+                else 0.5
+            )
+            attrition_val = (
+                round(risk.attrition_probability * 100, 1)
+                if risk and risk.attrition_probability is not None
+                else 0.0
+            )
+
+            # Derive indicators using same thresholds as SafetyValveEngine
+            team_members_detail.append({
+                "name": name,
+                "role": m.role,
+                "risk_level": risk.risk_level if risk else "UNKNOWN",
+                "velocity": velocity_val,
+                "confidence": round(risk.confidence, 2) if risk and risk.confidence else 0.0,
+                "attrition_probability": attrition_val,
+                "belongingness_score": belongingness_val,
+                "indicators": {
+                    "chaotic_hours": velocity_val > 1.5,
+                    "social_withdrawal": belongingness_val < 0.4,
+                    "sustained_intensity": velocity_val > 2.0,
+                },
+            })
+
+        # Sort: highest-risk first
+        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "LOW": 3, "UNKNOWN": 4}
+        team_members_detail.sort(
+            key=lambda e: risk_order.get(e["risk_level"], 5)
+        )
+
         return {
             "team_size": team_size,
             "at_risk_count": at_risk_count,
             "avg_velocity": avg_velocity,
             "risk_distribution": risk_distribution,
+            "team_members": team_members_detail,
         }
 
     def _get_org_aggregates(self, tenant_id: str) -> dict:

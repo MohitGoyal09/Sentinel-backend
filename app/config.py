@@ -5,7 +5,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = "postgresql://user:password@localhost:5432/sentinel"
+    database_url: str = ""  # Required: set DATABASE_URL env var
 
     # Supabase Configuration
     supabase_url: str = ""
@@ -72,6 +72,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET cannot be a common placeholder value. "
                 "Generate a cryptographically secure secret."
+            )
+        return v
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        if not v or v == "" or "user:password" in v:
+            raise ValueError(
+                "DATABASE_URL must be set to a real database connection string"
+            )
+        return v
+
+    @field_validator("encryption_key")
+    @classmethod
+    def validate_encryption_key(cls, v: str) -> str:
+        if not v or len(v) < 16:
+            raise ValueError("ENCRYPTION_KEY must be set (min 16 characters)")
+        return v
+
+    @field_validator("vault_salt")
+    @classmethod
+    def validate_vault_salt(cls, v: str) -> str:
+        if not v or len(v) < 8 or v in ("test_salt", "salt", ""):
+            raise ValueError(
+                "VAULT_SALT must be set to a strong, unique value (min 8 chars)"
             )
         return v
 

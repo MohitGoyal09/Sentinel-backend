@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
-from app.models.analytics import RiskScore, RiskHistory
+from app.models.analytics import RiskScore, RiskHistory, SkillProfile
 from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService, UserRole
@@ -47,6 +47,9 @@ def get_my_profile(
     """
     # Get current risk score
     risk_score = db.query(RiskScore).filter_by(user_hash=current_user.user_hash).first()
+
+    # Get skill profile
+    skill_profile = db.query(SkillProfile).filter_by(user_hash=current_user.user_hash).first()
 
     # Get user's primary role from TenantMember
     primary_member = db.query(TenantMember).filter_by(user_hash=current_user.user_hash).first()
@@ -96,6 +99,7 @@ def get_my_profile(
             "thwarted_belongingness": risk_score.thwarted_belongingness
             if risk_score
             else None,
+            "attrition_probability": risk_score.attrition_probability if risk_score else 0.0,
             "updated_at": risk_score.updated_at.isoformat() if risk_score else None,
         }
         if risk_score
@@ -108,6 +112,15 @@ def get_my_profile(
             if current_user.monitoring_paused_until
             else None,
         },
+        "skills": {
+            "technical": skill_profile.technical if skill_profile else 50.0,
+            "communication": skill_profile.communication if skill_profile else 50.0,
+            "leadership": skill_profile.leadership if skill_profile else 50.0,
+            "collaboration": skill_profile.collaboration if skill_profile else 50.0,
+            "adaptability": skill_profile.adaptability if skill_profile else 50.0,
+            "creativity": skill_profile.creativity if skill_profile else 50.0,
+            "updated_at": skill_profile.updated_at.isoformat() if skill_profile and skill_profile.updated_at else None,
+        } if skill_profile else None,
     }
 
 
@@ -405,4 +418,106 @@ def get_my_audit_trail(
             }
             for log in logs
         ],
+    }
+
+
+@router.get("/profile/{user_hash}")
+def get_user_profile(
+    user_hash: str,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a user's profile (for managers viewing team members, admins viewing anyone).
+    Returns: name, role, team, date_joined, risk data, skills, attrition probability.
+    """
+    from app.models.analytics import CentralityScore
+    from app.models.team import Team
+    from app.core.security import privacy
+
+    # Get the requesting user's role
+    requester = db.query(TenantMember).filter_by(user_hash=current_user.user_hash).first()
+    if not requester:
+        raise HTTPException(status_code=403, detail="Not a tenant member")
+
+    # Role-based access control
+    if requester.role == "employee":
+        if user_hash != current_user.user_hash:
+            raise HTTPException(status_code=403, detail="Employees can only view their own profile")
+    elif requester.role == "manager":
+        # Verify target is in manager's team
+        team_hashes = [
+            tm.user_hash for tm in
+            db.query(TenantMember.user_hash).filter_by(
+                team_id=requester.team_id, tenant_id=requester.tenant_id
+            ).all()
+        ] if requester.team_id else []
+        if user_hash not in team_hashes and user_hash != current_user.user_hash:
+            raise HTTPException(status_code=403, detail="Can only view your team members")
+    # Admin can view anyone in tenant
+
+    # Get target user data
+    target_member = db.query(TenantMember).filter_by(
+        user_hash=user_hash, tenant_id=requester.tenant_id
+    ).first()
+    if not target_member:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target_identity = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
+
+    # Get name from display_name or encrypted email
+    name = target_member.display_name
+    if not name and target_identity:
+        try:
+            email = privacy.decrypt(target_identity.email_encrypted)
+            name = email.split("@")[0].replace(".", " ").title()
+        except Exception:
+            name = f"User {user_hash[:4]}"
+
+    # Get team name
+    team_name = None
+    if target_member.team_id:
+        team = db.query(Team).filter_by(id=target_member.team_id).first()
+        team_name = team.name if team else None
+
+    # Risk data
+    risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+
+    # Skills
+    skill_profile = db.query(SkillProfile).filter_by(user_hash=user_hash).first()
+
+    # Centrality (network impact)
+    centrality = db.query(CentralityScore).filter_by(user_hash=user_hash).first()
+
+    return {
+        "success": True,
+        "data": {
+            "user_hash": user_hash,
+            "name": name or f"User {user_hash[:4]}",
+            "role": target_member.role,
+            "team": team_name,
+            "date_joined": target_identity.created_at.isoformat()
+            if target_identity and target_identity.created_at
+            else None,
+            "risk": {
+                "risk_level": risk_score.risk_level if risk_score else "LOW",
+                "velocity": risk_score.velocity if risk_score else 0.0,
+                "confidence": risk_score.confidence if risk_score else 0.0,
+                "belongingness_score": risk_score.thwarted_belongingness if risk_score else 0.5,
+                "attrition_probability": risk_score.attrition_probability if risk_score else 0.0,
+            } if risk_score else None,
+            "skills": {
+                "technical": skill_profile.technical,
+                "communication": skill_profile.communication,
+                "leadership": skill_profile.leadership,
+                "collaboration": skill_profile.collaboration,
+                "adaptability": skill_profile.adaptability,
+                "creativity": skill_profile.creativity,
+            } if skill_profile else None,
+            "network": {
+                "betweenness": centrality.betweenness if centrality else 0.0,
+                "eigenvector": centrality.eigenvector if centrality else 0.0,
+                "unblocking_count": centrality.unblocking_count if centrality else 0,
+            } if centrality else None,
+        }
     }

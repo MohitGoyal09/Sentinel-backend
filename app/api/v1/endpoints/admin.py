@@ -240,7 +240,7 @@ def get_system_audit_logs(
 @router.get("/users", response_model=dict)
 def get_all_users(
     role: Optional[str] = None,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = 0,
     member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
@@ -698,7 +698,7 @@ def search_users(
     role: str = "",
     sort_by: str = "created_at",
     sort_order: str = "desc",
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = 0,
     db: Session = Depends(get_db),
     member: TenantMember = Depends(require_role("admin")),
@@ -785,12 +785,10 @@ def get_system_config(member: TenantMember = Depends(require_role("admin"))):
 
 @router.get("/pipeline/health")
 def get_pipeline_health(
-    member: TenantMember = Depends(get_tenant_member),
+    member: TenantMember = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     """Pipeline health dashboard for admins (spec Section 6)."""
-    if member.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
 
     from app.api.v1.endpoints.ingestion import _pipeline_metrics
 

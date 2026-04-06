@@ -57,6 +57,9 @@ class AuditAction:
     ENGINE_RECOMPUTED: str = "engine_recomputed"
     CSV_UPLOADED: str = "csv_uploaded"
 
+    # Auth events
+    USER_LOGGED_OUT: str = "user_logged_out"
+
 
 class AuditService:
     """

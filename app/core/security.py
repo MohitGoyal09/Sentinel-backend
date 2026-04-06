@@ -51,8 +51,13 @@ class PrivacyEngine:
         try:
             return self.cipher.decrypt(encrypted).decode()
         except Exception as e:
-            logger.warning("Decryption failed: %s", type(e).__name__)
-            return ""
+            logger.error(
+                "Decryption failed (type=%s, data_len=%d): %s",
+                type(e).__name__,
+                len(encrypted) if encrypted else 0,
+                e,
+            )
+            return "[decryption-failed]"
 
 
 privacy = PrivacyEngine()

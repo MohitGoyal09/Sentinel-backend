@@ -70,6 +70,8 @@ TEAMS = [
     {"name": "Engineering", "manager_email": "eng.manager@acme.com"},
     {"name": "Design", "manager_email": "design.manager@acme.com"},
     {"name": "Data Science", "manager_email": "data.lead@acme.com"},
+    {"name": "Sales", "manager_email": "eng.manager@acme.com"},
+    {"name": "People Ops", "manager_email": "admin@acme.com"},
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -95,6 +97,9 @@ DEMO_USERS = [
     # Data Science team
     {"email": "analyst1@acme.com",       "name": "Liam Carter",     "role": "employee", "team": "Data Science"},
     {"email": "analyst2@acme.com",       "name": "Sofia Martinez",  "role": "employee", "team": "Data Science"},
+    # Non-tech personas
+    {"email": "sales1@acme.com",         "name": "Ryan Mitchell",   "role": "employee", "team": "Sales"},
+    {"email": "hr1@acme.com",            "name": "Aisha Patel",     "role": "employee", "team": "People Ops"},
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -115,6 +120,8 @@ RISK_PROFILES = {
     "designer2@acme.com":      {"risk": "ELEVATED", "velocity": 1.7,  "belonging": 0.35, "conf": 0.80},
     "analyst1@acme.com":       {"risk": "LOW",      "velocity": 0.8,  "belonging": 0.72, "conf": 0.86},
     "analyst2@acme.com":       {"risk": "LOW",      "velocity": 0.7,  "belonging": 0.74, "conf": 0.90},
+    "sales1@acme.com":         {"risk": "LOW",      "velocity": 0.6,  "belonging": 0.78, "conf": 0.88},
+    "hr1@acme.com":            {"risk": "LOW",      "velocity": 0.5,  "belonging": 0.82, "conf": 0.91},
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -135,6 +142,8 @@ SKILL_PROFILES = {
     "designer2@acme.com":      {"technical": 58, "communication": 45, "leadership": 30, "collaboration": 38, "adaptability": 65, "creativity": 85},
     "analyst1@acme.com":       {"technical": 82, "communication": 60, "leadership": 35, "collaboration": 65, "adaptability": 72, "creativity": 55},
     "analyst2@acme.com":       {"technical": 80, "communication": 68, "leadership": 38, "collaboration": 70, "adaptability": 75, "creativity": 60},
+    "sales1@acme.com":         {"technical": 40, "communication": 90, "leadership": 50, "collaboration": 82, "adaptability": 78, "creativity": 65},
+    "hr1@acme.com":            {"technical": 35, "communication": 88, "leadership": 60, "collaboration": 85, "adaptability": 80, "creativity": 58},
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -155,6 +164,8 @@ CENTRALITY_SCORES = {
     "designer2@acme.com":      {"betweenness": 0.15, "eigenvector": 0.25, "unblocking_count": 2,  "knowledge_transfer_score": 28},
     "analyst1@acme.com":       {"betweenness": 0.22, "eigenvector": 0.38, "unblocking_count": 4,  "knowledge_transfer_score": 42},
     "analyst2@acme.com":       {"betweenness": 0.18, "eigenvector": 0.35, "unblocking_count": 3,  "knowledge_transfer_score": 38},
+    "sales1@acme.com":         {"betweenness": 0.12, "eigenvector": 0.30, "unblocking_count": 2,  "knowledge_transfer_score": 30},
+    "hr1@acme.com":            {"betweenness": 0.28, "eigenvector": 0.42, "unblocking_count": 5,  "knowledge_transfer_score": 50},
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -214,14 +225,14 @@ def _risk_history_belonging(email: str, day: int) -> float:
 # Persona Event Generators
 # ═══════════════════════════════════════════════════════════════════════════
 
-EVENT_TYPES = ["commit", "pr_review", "slack_message", "unblocked", "standup", "code_review", "meeting"]
+EVENT_TYPES = ["commit", "pr_review", "slack_message", "unblocked", "standup", "code_review", "meeting", "email_sent", "ticket_created"]
 
 
 def _pick_hour_jordan() -> int:
-    """Jordan (chaotic): 40% 22:00-03:00, 30% 14:00-20:00, 30% random."""
+    """Jordan (chaotic): 40% 20:00-23:00, 30% 14:00-20:00, 30% random."""
     r = rng.random()
     if r < 0.40:
-        return rng.choice([22, 23, 0, 1, 2, 3])
+        return rng.choice([20, 21, 22, 23])
     elif r < 0.70:
         return rng.randint(14, 20)
     else:
@@ -266,11 +277,31 @@ def _pick_hour_default() -> int:
         return rng.choice([8, 18, 19])
 
 
+def _pick_hour_sales() -> int:
+    """Ryan (sales): 80% 08:00-17:00, 20% 07:00-08:00 (early starts)."""
+    r = rng.random()
+    if r < 0.80:
+        return rng.randint(8, 16)
+    else:
+        return 7
+
+
+def _pick_hour_hr() -> int:
+    """Aisha (HR): 90% 09:00-17:00, 10% 08:00."""
+    r = rng.random()
+    if r < 0.90:
+        return rng.randint(9, 16)
+    else:
+        return 8
+
+
 HOUR_PICKERS = {
     "dev1@acme.com": _pick_hour_jordan,
     "dev3@acme.com": _pick_hour_david,
     "designer2@acme.com": _pick_hour_olivia,
     "dev2@acme.com": _pick_hour_maria,
+    "sales1@acme.com": _pick_hour_sales,
+    "hr1@acme.com": _pick_hour_hr,
 }
 
 
@@ -341,6 +372,19 @@ def _generate_event_metadata(
     elif event_type == "pr_review" or event_type == "code_review":
         meta["comment_length"] = rng.randint(50, 500)
         meta["files_changed"] = rng.randint(1, 10)
+
+    elif event_type == "email_sent":
+        meta["recipient_count"] = rng.randint(1, 5)
+        meta["has_attachment"] = rng.random() < 0.3
+        meta["subject_length"] = rng.randint(20, 100)
+
+    elif event_type == "ticket_created":
+        meta["priority"] = rng.choice(["low", "medium", "high"])
+        meta["category"] = rng.choice(["support", "feature_request", "bug_report", "internal"])
+
+    elif event_type == "meeting":
+        meta["duration_minutes"] = rng.choice([30, 45, 60, 90])
+        meta["attendee_count"] = rng.randint(2, 8)
 
     return meta
 
@@ -415,6 +459,22 @@ def _generate_persona_events(
             else:
                 n_events = rng.randint(4, 6)
             type_weights = ["meeting"] * 4 + ["slack_message"] * 3 + ["pr_review"] * 1 + ["standup"] * 1
+
+        elif email == "sales1@acme.com":
+            # Ryan: sales rep, email-heavy, some meetings, no commits
+            if is_weekend:
+                n_events = 0
+            else:
+                n_events = rng.randint(4, 7)
+            type_weights = ["email_sent"] * 4 + ["slack_message"] * 3 + ["meeting"] * 2 + ["ticket_created"] * 1
+
+        elif email == "hr1@acme.com":
+            # Aisha: HR, meetings + slack + tickets, no commits
+            if is_weekend:
+                n_events = 0
+            else:
+                n_events = rng.randint(3, 5)
+            type_weights = ["meeting"] * 3 + ["slack_message"] * 3 + ["email_sent"] * 2 + ["ticket_created"] * 2
 
         else:
             # Default: 2-4 events/day, normal hours
@@ -553,8 +613,14 @@ def _generate_graph_edges(user_hashes: dict, team_map: dict, tenant_id, now: dat
         ("dev2@acme.com", "designer1@acme.com"),
         ("dev3@acme.com", "analyst2@acme.com"),
         ("analyst1@acme.com", "designer1@acme.com"),
+        # Non-tech cross-team edges
+        ("sales1@acme.com", "admin@acme.com"),
+        ("sales1@acme.com", "eng.manager@acme.com"),
+        ("hr1@acme.com", "admin@acme.com"),
+        ("hr1@acme.com", "design.manager@acme.com"),
+        ("hr1@acme.com", "sales1@acme.com"),
     ]
-    cross_weights = [0.35, 0.32, 0.30, 0.38, 0.28, 0.25, 0.18, 0.22, 0.15, 0.12]
+    cross_weights = [0.35, 0.32, 0.30, 0.38, 0.28, 0.25, 0.18, 0.22, 0.15, 0.12, 0.30, 0.20, 0.42, 0.25, 0.35]
     for idx, (e1, e2) in enumerate(cross_team_pairs):
         h1 = user_hashes[e1]
         h2 = user_hashes[e2]
@@ -599,7 +665,7 @@ def _generate_audit_logs(
         ))
 
     # 2. invite_accepted — staggered -29 to -25 days
-    accept_days = [29, 29, 28, 28, 28, 27, 27, 27, 27, 26, 26, 25, 25]
+    accept_days = [29, 29, 28, 28, 28, 27, 27, 27, 27, 26, 26, 25, 25, 25, 24]
     for idx, u in enumerate(DEMO_USERS):
         uh = user_hashes[u["email"]]
         logs.append(AuditLog(
@@ -626,6 +692,8 @@ def _generate_audit_logs(
         "designer2@acme.com":      [2, 5, 9],
         "analyst1@acme.com":       [1, 3, 6, 10, 13],
         "analyst2@acme.com":       [2, 5, 8, 12],
+        "sales1@acme.com":         [1, 2, 4, 7, 10],
+        "hr1@acme.com":            [1, 3, 5, 8, 11, 13],
     }
     login_methods = ["email", "email", "email", "google_sso"]
     for u in DEMO_USERS:

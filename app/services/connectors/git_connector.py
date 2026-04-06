@@ -44,6 +44,9 @@ class GitConnector(BaseConnector):
                 "additions": commit_data.get("additions", 0),
                 "deletions": commit_data.get("deletions", 0),
                 "hour_of_day": hour,
+                "after_hours": hour >= 21 or hour <= 6,
+                "source": "github",
+                "source_id": commit_data.get("sha", ""),
             },
             risk_signal=risk_signal,
         )
