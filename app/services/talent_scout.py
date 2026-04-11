@@ -12,31 +12,39 @@ logger = logging.getLogger("sentinel.talent_scout")
 class TalentScout:
     """Identify hidden gems via network analysis"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, tenant_id: Optional[UUID] = None):
         self.db = db
+        self.tenant_id = tenant_id
 
-    def analyze_network(self, team_hash: str = None, tenant_id: Optional[UUID] = None) -> Dict:
-        """Calculate centrality metrics for all users"""
+    def analyze_network(self, team_hash: str = None, tenant_id: UUID = None) -> Dict:
+        """Calculate centrality metrics for all users.
+
+        Args:
+            team_hash: Optional team filter (unused, kept for API compat)
+            tenant_id: Required tenant scope. If not provided, returns NO_DATA
+                       to prevent cross-tenant data leakage.
+        """
         G = nx.DiGraph()
 
-        # Build graph from interactions — scoped to tenant if provided
-        if tenant_id is not None:
-            tenant_hashes = {
-                tm.user_hash
-                for tm in self.db.query(TenantMember.user_hash)
-                .filter_by(tenant_id=tenant_id)
-                .all()
-            }
-            edges = (
-                self.db.query(GraphEdge)
-                .filter(
-                    GraphEdge.source_hash.in_(tenant_hashes),
-                    GraphEdge.target_hash.in_(tenant_hashes),
-                )
-                .all()
+        if tenant_id is None:
+            logger.warning("analyze_network called without tenant_id — refusing to load all edges")
+            return {"status": "NO_DATA"}
+
+        # Build graph from interactions — always scoped to tenant
+        tenant_hashes = {
+            tm.user_hash
+            for tm in self.db.query(TenantMember.user_hash)
+            .filter_by(tenant_id=tenant_id)
+            .all()
+        }
+        edges = (
+            self.db.query(GraphEdge)
+            .filter(
+                GraphEdge.source_hash.in_(tenant_hashes),
+                GraphEdge.target_hash.in_(tenant_hashes),
             )
-        else:
-            edges = self.db.query(GraphEdge).all()
+            .all()
+        )
         for edge in edges:
             G.add_edge(edge.source_hash, edge.target_hash, weight=edge.weight)
 
@@ -165,11 +173,12 @@ class TalentScout:
 
     def _knowledge_transfer_score(self, user_hash: str) -> float:
         """Analyze code review comments for insight quality"""
-        reviews = (
-            self.db.query(Event)
-            .filter(Event.user_hash == user_hash, Event.event_type == "pr_review")
-            .all()
+        query = self.db.query(Event).filter(
+            Event.user_hash == user_hash, Event.event_type == "pr_review"
         )
+        if self.tenant_id is not None:
+            query = query.filter(Event.tenant_id == self.tenant_id)
+        reviews = query.all()
 
         if not reviews:
             return 0.0

@@ -96,6 +96,13 @@ class MCPToolRouter:
                 "and COMPOSIO_API_KEY is set"
             )
 
+        # Evict oldest locks if the dict grows too large
+        if len(self._user_locks) > 10_000:
+            # Remove locks for users no longer in the session cache
+            stale = [k for k in self._user_locks if k not in self._cache]
+            for k in stale:
+                self._user_locks.pop(k, None)
+
         # Per-user lock prevents duplicate session creation
         lock = self._user_locks.setdefault(user_id, asyncio.Lock())
 
@@ -142,6 +149,7 @@ class MCPToolRouter:
         Returns True if an entry was removed.
         """
         removed = self._cache.pop(user_id, None) is not None
+        self._user_locks.pop(user_id, None)  # Clean up lock too
         if removed:
             logger.info(
                 "Invalidated MCP session cache for user %s", user_id[:8]
@@ -158,6 +166,7 @@ class MCPToolRouter:
         """Clear ALL cached sessions. Used as a fallback when entity_id matching fails."""
         count = len(self._cache)
         self._cache.clear()
+        self._user_locks.clear()
         if count:
             logger.info("Invalidated ALL %d MCP sessions", count)
         return count
@@ -237,7 +246,7 @@ class MCPToolRouter:
         session = composio.tool_router.create(
             user_id=user_id,
             connected_accounts=connected_map if connected_map else None,
-            toolkits={"disable": ["MEM0"]},
+            toolkits={"disable": ["MEM0", "EXECUTE_CODE", "REMOTE_WORKBENCH", "CODE_ANALYSIS"]},
         )
         return session.mcp.url, session.mcp.headers
 

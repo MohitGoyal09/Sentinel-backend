@@ -1,10 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from supabase import create_client, Client
 try:
     from app.core.config import get_settings
 except ImportError:
     from app.config import get_settings
+
+from app.core.supabase import get_supabase_client, get_supabase_admin_client
 
 settings = get_settings()
 
@@ -19,29 +20,6 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Supabase client for real-time features and auth
-_supabase_client: Client | None = None
-
-def get_supabase_client() -> Client:
-    """Get or create Supabase client singleton."""
-    global _supabase_client
-    if _supabase_client is None:
-        if not settings.supabase_url or not settings.supabase_key:
-            raise ValueError(
-                "Supabase URL and Key must be configured. "
-                "Set SUPABASE_URL and SUPABASE_KEY environment variables."
-            )
-        _supabase_client = create_client(settings.supabase_url, settings.supabase_key)
-    return _supabase_client
-
-def get_supabase_admin_client() -> Client:
-    """Get Supabase client with service role key for admin operations."""
-    if not settings.supabase_url or not settings.supabase_service_key:
-        raise ValueError(
-            "Supabase URL and Service Key must be configured for admin operations. "
-            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables."
-        )
-    return create_client(settings.supabase_url, settings.supabase_service_key)
 
 # Dependency for FastAPI
 def get_db():

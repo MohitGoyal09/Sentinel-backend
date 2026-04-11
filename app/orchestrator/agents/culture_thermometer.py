@@ -52,6 +52,7 @@ class CultureThermometerAgent(BaseAgent):
         self.validate_payload(payload, ["team_hashes"])
 
         team_hashes = payload["team_hashes"]
+        tenant_id = payload.get("tenant_id")
         include_forecast = payload.get("include_forecast", False)
         forecast_days = payload.get("forecast_days", 30)
 
@@ -62,7 +63,7 @@ class CultureThermometerAgent(BaseAgent):
         )
 
         with SessionLocal() as db:
-            engine = CultureThermometer(db)
+            engine = CultureThermometer(db, tenant_id=tenant_id)
 
             # Run team analysis
             result = engine.analyze_team(team_hashes)

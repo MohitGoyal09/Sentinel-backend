@@ -49,7 +49,7 @@ _ADMIN_ACTIONS = [
 ]
 
 # Risk level ordering for distribution counts
-_RISK_LEVELS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+_RISK_LEVELS = ["LOW", "ELEVATED", "MEDIUM", "HIGH", "CRITICAL"]
 
 
 class DataBoundaryEnforcer:
@@ -258,9 +258,9 @@ class DataBoundaryEnforcer:
             })
 
         # Sort: highest-risk first
-        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "LOW": 3, "UNKNOWN": 4}
+        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "MEDIUM": 3, "LOW": 4, "UNKNOWN": 5}
         team_members_detail.sort(
-            key=lambda e: risk_order.get(e["risk_level"], 5)
+            key=lambda e: risk_order.get(e["risk_level"], 6)
         )
 
         return {
@@ -339,8 +339,8 @@ class DataBoundaryEnforcer:
             })
 
         # Sort: critical first, then elevated, then low
-        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "LOW": 3, "UNKNOWN": 4}
-        employees_detail.sort(key=lambda e: risk_order.get(e["risk_level"], 5))
+        risk_order = {"CRITICAL": 0, "HIGH": 1, "ELEVATED": 2, "MEDIUM": 3, "LOW": 4, "UNKNOWN": 5}
+        employees_detail.sort(key=lambda e: risk_order.get(e["risk_level"], 6))
 
         # Team culture summary: graph fragmentation
         from app.models.analytics import GraphEdge

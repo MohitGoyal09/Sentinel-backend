@@ -50,49 +50,51 @@ class TalentScoutAgent(BaseAgent):
         Returns:
             Talent scout analysis results
         """
+        tenant_id = payload.get("tenant_id")
+
         with SessionLocal() as db:
-            engine = TalentScout(db)
-            
+            engine = TalentScout(db, tenant_id=tenant_id)
+
             # Determine analysis type
             has_user_hash = "user_hash" in payload and payload["user_hash"]
             has_team_hashes = "team_hashes" in payload and payload["team_hashes"]
-            
+
             if has_user_hash:
                 analysis_type = payload.get("analysis_type", "individual")
                 user_hash = payload["user_hash"]
-                
+
                 log.info(
                     "talent_scout.execute",
                     user_hash=user_hash[:8],
                     analysis_type=analysis_type
                 )
-                
-                result = engine.analyze(user_hash)
-                
+
+                result = engine.analyze_network(user_hash, tenant_id=tenant_id)
+
             elif has_team_hashes:
                 analysis_type = "team"
                 team_hashes = payload["team_hashes"]
                 network_depth = payload.get("network_depth", 2)
-                
+
                 log.info(
                     "talent_scout.execute",
                     team_size=len(team_hashes),
                     analysis_type=analysis_type,
                     network_depth=network_depth
                 )
-                
-                result = engine.analyze_network()
-                
+
+                result = engine.analyze_network(tenant_id=tenant_id)
+
             else:
                 # Global analysis
                 analysis_type = "global"
-                
+
                 log.info(
                     "talent_scout.execute",
                     analysis_type=analysis_type
                 )
-                
-                result = engine.analyze_network()
+
+                result = engine.analyze_network(tenant_id=tenant_id)
             
             # Add analysis metadata
             result["analysis_type"] = analysis_type

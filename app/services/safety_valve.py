@@ -1,7 +1,7 @@
 import logging
 import numpy as np
 from scipy import stats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 from sqlalchemy.orm import Session
 from app.models.analytics import Event, RiskScore
@@ -9,6 +9,9 @@ from app.models.analytics import Event, RiskScore
 from app.services.context import ContextEnricher
 from app.services.nudge_dispatcher import NudgeDispatcher
 from app.services.websocket_manager import manager
+
+from typing import Optional
+from uuid import UUID
 
 
 class SafetyValve:
@@ -23,8 +26,9 @@ class SafetyValve:
         "cross_industry": {"burnout_rate": 0.22, "avg_velocity": 0.8, "avg_belongingness": 0.65, "label": "Cross-Industry"},
     }
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, tenant_id: Optional[UUID] = None):
         self.db = db
+        self.tenant_id = tenant_id
         self.min_days = 7
         self.critical_threshold = 2.5
         self.elevated_threshold = 1.5
@@ -112,7 +116,7 @@ class SafetyValve:
         # Risk Decision
         explained_count = len(events) - len(unexplained_events)
 
-        if velocity > self.critical_threshold and belongingness < 0.3:
+        if velocity > self.critical_threshold and belongingness < 0.3 and entropy > 1.5:
             risk = "CRITICAL"
         elif velocity > self.elevated_threshold or belongingness < 0.4:
             risk = "ELEVATED"
@@ -282,27 +286,30 @@ class SafetyValve:
         return [e.timestamp.hour for e in events]
 
     def _get_events(self, user_hash: str, days: int):
-        cutoff = datetime.utcnow() - timedelta(days=days)
-        return (
-            self.db.query(Event)
-            .filter(Event.user_hash == user_hash, Event.timestamp >= cutoff)
-            .order_by(Event.timestamp.asc())
-            .all()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        query = self.db.query(Event).filter(
+            Event.user_hash == user_hash, Event.timestamp >= cutoff
         )
+        if self.tenant_id is not None:
+            query = query.filter(Event.tenant_id == self.tenant_id)
+        return query.order_by(Event.timestamp.asc()).all()
 
     def _store_result(
         self, user_hash, velocity, risk, confidence, belongingness, attrition_probability=0.0
     ):
-        score = self.db.query(RiskScore).filter_by(user_hash=user_hash).first()
+        query = self.db.query(RiskScore).filter_by(user_hash=user_hash)
+        if self.tenant_id is not None:
+            query = query.filter(RiskScore.tenant_id == self.tenant_id)
+        score = query.first()
         if not score:
-            score = RiskScore(user_hash=user_hash)
+            score = RiskScore(user_hash=user_hash, tenant_id=self.tenant_id)
 
         score.velocity = velocity
         score.risk_level = risk
         score.confidence = confidence
         score.thwarted_belongingness = belongingness
         score.attrition_probability = attrition_probability
-        score.updated_at = datetime.utcnow()
+        score.updated_at = datetime.now(timezone.utc)
         self.db.add(score)
         self.db.commit()
 
@@ -310,12 +317,13 @@ class SafetyValve:
 
         history = RiskHistory(
             user_hash=user_hash,
+            tenant_id=self.tenant_id,
             risk_level=risk,
             velocity=velocity,
             confidence=confidence,
             belongingness_score=belongingness,
             attrition_probability=attrition_probability,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self.db.add(history)
         self.db.commit()
@@ -329,7 +337,7 @@ class SafetyValve:
         from app.models.analytics import RiskHistory
 
         rng = np.random.default_rng(hash(user_hash) % (2**31))
-        base = datetime.utcnow() - timedelta(days=30)
+        base = datetime.now(timezone.utc) - timedelta(days=30)
 
         trajectories = {
             "alex_burnout": self._trajectory_burnout,
@@ -347,6 +355,7 @@ class SafetyValve:
             timestamp = base + timedelta(days=day_offset, hours=rng.integers(9, 18))
             entry = RiskHistory(
                 user_hash=user_hash,
+                tenant_id=self.tenant_id,
                 risk_level=risk_level,
                 velocity=velocity,
                 confidence=confidence,

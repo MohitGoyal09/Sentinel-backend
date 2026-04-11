@@ -460,12 +460,16 @@ class OrgAgent:
 
         messages: list[dict] = [{"role": "system", "content": full_system}]
 
+        ALLOWED_ROLES = {"user", "assistant"}
         recent_history = conversation_history[-_MAX_HISTORY_TURNS:]
         for entry in recent_history:
             if isinstance(entry, dict) and "role" in entry and "content" in entry:
-                messages.append(
-                    {"role": entry["role"], "content": entry["content"]}
-                )
+                role = entry.get("role", "")
+                if role in ALLOWED_ROLES:
+                    messages.append(
+                        {"role": role, "content": entry["content"]}
+                    )
+                # Skip system/tool/other injected roles
 
         messages.append({"role": "user", "content": message})
         return messages

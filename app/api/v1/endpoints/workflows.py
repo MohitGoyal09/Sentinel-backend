@@ -19,9 +19,8 @@ from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import Session
 
-from app.api.deps.auth import get_current_user_identity, get_tenant_member
+from app.api.deps.auth import get_tenant_member
 from app.core.database import get_db
-from app.models.identity import UserIdentity
 from app.models.tenant import TenantMember
 from app.services.audit_service import AuditService, AuditAction
 
@@ -119,8 +118,8 @@ _VALID_ACTIONS = {"slack_message", "email", "jira_ticket", "webhook"}
 # ============================================================================
 
 
-def _owner_key(user: UserIdentity) -> str:
-    """Derive a stable owner key from the current user."""
+def _owner_key(user) -> str:
+    """Derive a stable owner key from the current user (UserIdentity or TenantMember)."""
     return user.user_hash
 
 
@@ -159,14 +158,15 @@ def _workflow_to_dict(wf: Dict[str, Any]) -> Dict[str, Any]:
 @router.get("")
 @router.get("/")
 async def get_workflows(
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Get all workflows for the current user / organisation.
 
     On first call, seeds three template workflows so the UI is never empty.
+    All authenticated users (any role) can list their own workflows.
     """
-    owner = _owner_key(current_user)
+    owner = _owner_key(member)
     workflows = _ensure_store_for(owner)
 
     return {
@@ -178,13 +178,14 @@ async def get_workflows(
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     workflow: WorkflowCreate,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
     Create a new automated workflow.
 
     Validates trigger and action values before persisting.
+    All authenticated users can create personal-scope workflows.
     """
     if workflow.trigger not in _VALID_TRIGGERS:
         raise HTTPException(
@@ -204,7 +205,7 @@ async def create_workflow(
             ),
         )
 
-    owner = _owner_key(current_user)
+    owner = _owner_key(member)
     workflows = _ensure_store_for(owner)
 
     wf_id = str(uuid.uuid4())
@@ -227,8 +228,8 @@ async def create_workflow(
 
     audit = AuditService(db)
     audit.log(
-        actor_hash=current_user.user_hash,
-        actor_role="employee",
+        actor_hash=member.user_hash,
+        actor_role=member.role,
         action=AuditAction.WORKFLOW_CREATED,
         details={"workflow_name": workflow.name, "trigger": workflow.trigger},
     )
@@ -241,17 +242,30 @@ async def create_workflow(
 async def update_workflow(
     workflow_id: str,
     update: WorkflowUpdate,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Enable/disable or rename an existing workflow.
 
+    Only the workflow creator or an admin can update a workflow.
     Returns 404 when the workflow_id does not belong to the current user.
     """
-    owner = _owner_key(current_user)
+    owner = _owner_key(member)
     workflows = _ensure_store_for(owner)
 
     if workflow_id not in workflows:
+        # If admin, check if workflow exists under another owner
+        if member.role == "admin":
+            for other_owner, other_workflows in _store.items():
+                if workflow_id in other_workflows:
+                    wf = other_workflows[workflow_id]
+                    if update.enabled is not None:
+                        wf["enabled"] = update.enabled
+                    if update.name is not None:
+                        wf["name"] = update.name
+                    wf["updated_at"] = datetime.utcnow().isoformat()
+                    logger.info(f"Workflow updated by admin: id={workflow_id} owner={other_owner}")
+                    return _workflow_to_dict(wf)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow '{workflow_id}' not found.",
@@ -274,17 +288,25 @@ async def update_workflow(
 @router.delete("/{workflow_id}", status_code=status.HTTP_200_OK)
 async def delete_workflow(
     workflow_id: str,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
 ):
     """
     Delete a workflow permanently.
 
+    Only the workflow creator or an admin can delete a workflow.
     Returns 404 when the workflow_id does not belong to the current user.
     """
-    owner = _owner_key(current_user)
+    owner = _owner_key(member)
     workflows = _ensure_store_for(owner)
 
     if workflow_id not in workflows:
+        # If admin, check if workflow exists under another owner
+        if member.role == "admin":
+            for other_owner, other_workflows in _store.items():
+                if workflow_id in other_workflows:
+                    del other_workflows[workflow_id]
+                    logger.info(f"Workflow deleted by admin: id={workflow_id} owner={other_owner}")
+                    return {"deleted": True, "workflow_id": workflow_id}
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow '{workflow_id}' not found.",
@@ -300,16 +322,17 @@ async def delete_workflow(
 @router.post("/{workflow_id}/execute")
 async def execute_workflow(
     workflow_id: str,
-    current_user: UserIdentity = Depends(get_current_user_identity),
+    member: TenantMember = Depends(get_tenant_member),
     db: Session = Depends(get_db),
 ):
     """
     Execute an existing workflow.
 
+    All authenticated users can execute their own workflows.
     Validates that the workflow exists for the current user, logs the execution,
     and returns success.
     """
-    owner = _owner_key(current_user)
+    owner = _owner_key(member)
     workflows = _ensure_store_for(owner)
 
     if workflow_id not in workflows:
@@ -322,8 +345,8 @@ async def execute_workflow(
 
     audit = AuditService(db)
     audit.log(
-        actor_hash=current_user.user_hash,
-        actor_role="employee",
+        actor_hash=member.user_hash,
+        actor_role=member.role,
         action=AuditAction.WORKFLOW_EXECUTED,
         details={
             "workflow_id": workflow_id,

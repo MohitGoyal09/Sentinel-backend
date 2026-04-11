@@ -100,8 +100,10 @@ async def personal_dashboard_ws(
                 )
 
             elif data.get("action") == "request_update":
-                # Client asking for immediate refresh
-                analysis = SafetyValve(db).analyze(user_hash)
+                # Client asking for immediate refresh — scope to tenant
+                tenant_member = db.query(TenantMember).filter_by(user_hash=user_hash).first()
+                ws_tenant_id = tenant_member.tenant_id if tenant_member else None
+                analysis = SafetyValve(db, tenant_id=ws_tenant_id).analyze(user_hash)
                 await websocket.send_json({"type": "manual_refresh", "data": analysis})
 
     except WebSocketDisconnect:

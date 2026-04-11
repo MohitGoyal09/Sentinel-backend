@@ -42,6 +42,7 @@ class UserIntegration(Base):
         Index('idx_user_integrations_status', 'status'),
         Index('idx_user_integrations_integration', 'integration_id'),
         UniqueConstraint('user_hash', 'tenant_id', 'integration_id', 'account_id', name='uq_user_integration_account'),
+        {"schema": "identity"},
     )
 
     def to_dict(self) -> dict:
@@ -95,6 +96,7 @@ class WorkflowTemplate(Base):
         Index('idx_workflow_templates_public', 'is_public'),
         Index('idx_workflow_templates_tenant', 'tenant_id'),
         UniqueConstraint('template_id', name='uq_template_id'),
+        {"schema": "identity"},
     )
 
     def to_dict(self) -> dict:
@@ -172,6 +174,7 @@ class WorkflowExecution(Base):
         Index('idx_workflow_executions_status', 'status'),
         Index('idx_workflow_executions_template', 'template_id'),
         UniqueConstraint('execution_id', name='uq_execution_id'),
+        {"schema": "identity"},
     )
 
     def to_dict(self) -> dict:

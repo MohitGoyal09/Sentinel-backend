@@ -40,9 +40,20 @@ from app.services.permission_service import PermissionService, PermissionDenied
 from app.api.deps.auth import get_current_user, get_current_user_identity, require_role, get_tenant_member
 from app.models.tenant import TenantMember
 from app.services.audit_service import AuditService, AuditAction
+from app.config import get_settings
 
 
 router = APIRouter()
+
+
+def require_simulation_mode():
+    """Dependency that blocks simulation endpoints when SIMULATION_MODE is disabled."""
+    settings = get_settings()
+    if not settings.simulation_mode:
+        raise HTTPException(
+            status_code=403,
+            detail="Simulation endpoints are disabled when SIMULATION_MODE=false",
+        )
 
 
 # Permission check helper
@@ -99,11 +110,11 @@ def check_user_data_access(
 
 
 # Background task wrapper
-def run_all_engines(user_hash: str):
+def run_all_engines(user_hash: str, tenant_id=None):
     try:
         with SessionLocal() as db:
-            SafetyValve(db).analyze(user_hash)
-            TalentScout(db).analyze_network()
+            SafetyValve(db, tenant_id=tenant_id).analyze(user_hash)
+            TalentScout(db, tenant_id=tenant_id).analyze_network(tenant_id=tenant_id)
     except Exception:
         logger.exception("Background engine analysis failed for user_hash=%s", user_hash)
 
@@ -112,7 +123,8 @@ def run_all_engines(user_hash: str):
 
 
 @router.post(
-    "/personas", response_model=SimulationResponse, status_code=status.HTTP_201_CREATED
+    "/personas", response_model=SimulationResponse, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_simulation_mode)],
 )
 def create_persona(
     request: CreatePersonaRequest,
@@ -139,10 +151,10 @@ def create_persona(
     db.commit()
 
     # Seed 30 days of historical risk data for the velocity chart
-    engine = SafetyValve(db)
+    engine = SafetyValve(db, tenant_id=member.tenant_id)
     engine.seed_risk_history(user_hash, request.persona_type)
 
-    background_tasks.add_task(run_all_engines, user_hash)
+    background_tasks.add_task(run_all_engines, user_hash, tenant_id=member.tenant_id)
 
     return SimulationResponse(
         success=True,
@@ -207,7 +219,7 @@ def analyze_user_safety(
     # RBAC Check: Verify user has permission to access this data
     check_user_data_access(db, member, user_hash)
 
-    engine = SafetyValve(db)
+    engine = SafetyValve(db, tenant_id=member.tenant_id)
     result = engine.analyze(user_hash)
     return SafetyValveResponse(success=True, data=result)
 
@@ -224,7 +236,7 @@ def analyze_user_network(
     # RBAC Check: Verify user has permission to access this data
     check_user_data_access(db, member, user_hash)
 
-    engine = TalentScout(db)
+    engine = TalentScout(db, tenant_id=member.tenant_id)
     result = engine.analyze_network(user_hash, tenant_id=member.tenant_id)
     return TalentScoutResponse(success=True, data=result)
 
@@ -276,7 +288,7 @@ def analyze_team_culture(
             ]
             team_hashes = tenant_hashes
 
-    engine = CultureThermometer(db)
+    engine = CultureThermometer(db, tenant_id=member.tenant_id)
     result = engine.analyze_team(team_hashes)
     return CultureThermometerResponse(success=True, data=result)
 
@@ -376,7 +388,7 @@ def get_nudge(
     # RBAC Check: Verify user has permission to access this data
     check_user_data_access(db, member, user_hash)
 
-    engine = SafetyValve(db)
+    engine = SafetyValve(db, tenant_id=member.tenant_id)
     analysis = engine.analyze(user_hash)
 
     risk_level = analysis.get("risk_level", "LOW")
@@ -760,7 +772,8 @@ def get_risk_history(
 # ============ REAL-TIME EVENTS ============
 
 
-@router.post("/events/inject", response_model=RealtimeInjectionResponse)
+@router.post("/events/inject", response_model=RealtimeInjectionResponse,
+              dependencies=[Depends(require_simulation_mode)])
 def inject_event(
     request: InjectEventRequest,
     background_tasks: BackgroundTasks,
@@ -800,7 +813,7 @@ def inject_event(
     db.commit()
 
     # Trigger background analysis
-    background_tasks.add_task(run_all_engines, user_hash)
+    background_tasks.add_task(run_all_engines, user_hash, tenant_id=member.tenant_id)
 
     return RealtimeInjectionResponse(
         success=True,
@@ -818,7 +831,7 @@ def get_global_talent(
     member: TenantMember = Depends(require_role("manager", "admin")),
 ):
     """Get global talent network analysis"""
-    engine = TalentScout(db)
+    engine = TalentScout(db, tenant_id=member.tenant_id)
     return {"success": True, "data": engine.analyze_network(tenant_id=member.tenant_id)}
 
 
@@ -828,7 +841,7 @@ def get_global_network(
     member: TenantMember = Depends(require_role("manager", "admin")),
 ):
     """Get global network metrics"""
-    engine = TalentScout(db)
+    engine = TalentScout(db, tenant_id=member.tenant_id)
     return {"success": True, "data": engine.get_network_metrics()}
 
 
@@ -844,7 +857,7 @@ def get_industry_benchmarks(
     """Get industry benchmark data for comparison"""
     from app.models.analytics import RiskScore
 
-    engine = SafetyValve(db)
+    engine = SafetyValve(db, tenant_id=member.tenant_id)
     benchmarks = engine.get_benchmarks(industry)
 
     # Calculate team actual burnout rate
@@ -889,7 +902,8 @@ def get_industry_benchmarks(
 # ============ ADMIN / SEED ============
 
 
-@router.post("/users/{user_hash}/seed-history")
+@router.post("/users/{user_hash}/seed-history",
+              dependencies=[Depends(require_simulation_mode)])
 def seed_user_history(
     user_hash: str,
     persona_type: str = "alex_burnout",
@@ -910,7 +924,7 @@ def seed_user_history(
             },
         }
 
-    engine = SafetyValve(db)
+    engine = SafetyValve(db, tenant_id=member.tenant_id)
     engine.seed_risk_history(user_hash, persona_type)
     new_count = db.query(RiskHistory).filter_by(user_hash=user_hash).count()
 

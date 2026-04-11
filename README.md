@@ -90,13 +90,17 @@ python -m scripts.seed_fresh
 
 This wipes existing data and creates a complete demo environment:
 
-- 1 tenant: **Acme Technologies**
-- 13 users across 3 teams (Engineering, Design, Data Science)
+- 1 tenant: **Acme Technologies** (enterprise plan)
+- 15 users across 5 teams (Engineering, Design, Data Science, Sales, People Ops)
 - Pre-computed risk scores, skill profiles, and centrality scores
-- ~550 behavioral events spread over 90 days
-- Chat sessions, audit logs, and notification preferences
+- 624 behavioral events over 14 days with persona-driven patterns
+- 450 risk history entries (30-day trends per user)
+- 60 graph edges (team clusters + cross-team bridges)
+- 116 audit logs covering 12 action types
+- 2 pre-seeded chat sessions
+- 69 notifications with 150 preferences
 
-All demo users share the password `Demo123!`.
+All demo users share the password `Demo123!`. Data is fully deterministic (`Random(42)`) — every run produces identical output.
 
 ---
 
@@ -209,7 +213,7 @@ All users belong to the **Acme Technologies** tenant. Password for all accounts:
 | `eng.manager@acme.com` | Priya Sharma | Manager | Engineering | ELEVATED |
 | `design.manager@acme.com` | Alex Rivera | Manager | Design | LOW |
 | `data.lead@acme.com` | Chen Wei | Manager | Data Science | LOW |
-| `dev1@acme.com` | Jordan Lee | Employee | Engineering | CRITICAL |
+| `dev1@acme.com` | Jordan Lee | Employee | Engineering | **CRITICAL** |
 | `dev2@acme.com` | Maria Santos | Employee | Engineering | LOW |
 | `dev3@acme.com` | David Kim | Employee | Engineering | ELEVATED |
 | `dev4@acme.com` | Emma Thompson | Employee | Engineering | LOW |
@@ -217,10 +221,15 @@ All users belong to the **Acme Technologies** tenant. Password for all accounts:
 | `designer2@acme.com` | Olivia Zhang | Employee | Design | ELEVATED |
 | `analyst1@acme.com` | Liam Carter | Employee | Data Science | LOW |
 | `analyst2@acme.com` | Sofia Martinez | Employee | Data Science | LOW |
+| `sales1@acme.com` | Ryan Mitchell | Employee | Sales | LOW |
+| `hr1@acme.com` | Aisha Patel | Employee | People Ops | LOW |
 
-`dev1@acme.com` (Jordan Lee) is the primary demo subject for burnout — CRITICAL risk, velocity 3.2, low communication and collaboration scores.
+**Key demo personas:**
 
-`dev4@acme.com` (Emma Thompson) is the hidden gem — highest betweenness centrality (0.85) and unblocking count (22), invisible to traditional performance metrics.
+- **Jordan Lee** (`dev1@acme.com`) — CRITICAL burnout. Velocity 3.2, belongingness 0.25, chaotic hours (22:00-03:00). The primary Safety Valve demo subject.
+- **Emma Thompson** (`dev4@acme.com`) — Hidden gem. Betweenness 0.85, eigenvector 0.15, unblocking count 22. Bridges Engineering and Design teams. The primary Talent Scout demo subject.
+- **Maria Santos** (`dev2@acme.com`) — Healthy baseline. Velocity 0.6, belongingness 0.75. Consistent 9-5 pattern. The control group.
+- **David Kim** (`dev3@acme.com`) — ELEVATED warning. Velocity 2.0, hours creeping up. Trending toward CRITICAL.
 
 ---
 
@@ -237,7 +246,7 @@ Run with coverage:
 pytest --cov=app --cov-report=term-missing
 ```
 
-The test suite has 35 test files covering auth dependencies, RBAC/permissions, middleware, tenant and team models, orchestrator intent classification, and identity reveal.
+The test suite covers auth dependencies, RBAC/permissions (52-permission matrix), tenant and team models, orchestrator intent classification, and identity reveal.
 
 ---
 

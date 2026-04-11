@@ -10,8 +10,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
-import hashlib
-
 from app.core.database import get_db
 from app.core.security import privacy
 from app.api.deps.auth import get_current_user_identity, require_role
@@ -20,8 +18,19 @@ from app.models.analytics import Event, RiskScore, RiskHistory, GraphEdge, Centr
 from app.services.simulation import RealTimeSimulator
 from app.services.safety_valve import SafetyValve
 from app.services.talent_scout import TalentScout
+from app.config import get_settings
 
 router = APIRouter()
+
+
+def require_simulation_mode():
+    """Dependency that blocks demo endpoints when SIMULATION_MODE is disabled."""
+    settings = get_settings()
+    if not settings.simulation_mode:
+        raise HTTPException(
+            status_code=403,
+            detail="Demo endpoints are disabled when SIMULATION_MODE=false",
+        )
 
 
 # Sample persona configurations
@@ -61,12 +70,7 @@ DEMO_PERSONAS = [
 ]
 
 
-def generate_user_hash(email: str) -> str:
-    """Generate consistent user hash from email"""
-    return hashlib.sha256(email.encode()).hexdigest()[:32]
-
-
-@router.post("/load-sample-data")
+@router.post("/load-sample-data", dependencies=[Depends(require_simulation_mode)])
 async def load_sample_data(db: Session = Depends(get_db), user=Depends(require_role("admin"))) -> Dict[str, Any]:
     """
     Load sample demo data for onboarding wizard.
@@ -76,16 +80,24 @@ async def load_sample_data(db: Session = Depends(get_db), user=Depends(require_r
         Dict containing created user hashes and summary statistics
     """
     try:
+        # Get tenant_id from the authenticated admin user
+        from app.models.tenant import TenantMember
+        demo_tenant_id = None
+        admin_hash = getattr(user, 'user_hash', None)
+        if admin_hash:
+            tm = db.query(TenantMember).filter_by(user_hash=admin_hash).first()
+            demo_tenant_id = tm.tenant_id if tm else None
+
         simulator = RealTimeSimulator(db)
-        safety_valve = SafetyValve(db)
-        talent_scout = TalentScout(db)
+        safety_valve = SafetyValve(db, tenant_id=demo_tenant_id)
+        talent_scout = TalentScout(db, tenant_id=demo_tenant_id)
 
         created_users = []
         total_events = 0
 
         for persona_config in DEMO_PERSONAS:
             email = persona_config["email"]
-            user_hash = generate_user_hash(email)
+            user_hash = privacy.hash_identity(email)
             persona_type = persona_config["persona_type"]
 
             # Check if user already exists
@@ -177,7 +189,7 @@ async def load_sample_data(db: Session = Depends(get_db), user=Depends(require_r
             # Create connections between demo users
             for other_persona in DEMO_PERSONAS:
                 if other_persona["email"] != email:
-                    other_hash = generate_user_hash(other_persona["email"])
+                    other_hash = privacy.hash_identity(other_persona["email"])
 
                     # Higher connectivity for "sarah_gem" (network hub)
                     if persona_type == "sarah_gem":
@@ -297,7 +309,7 @@ async def load_sample_data(db: Session = Depends(get_db), user=Depends(require_r
         )
 
 
-@router.delete("/clear-sample-data")
+@router.delete("/clear-sample-data", dependencies=[Depends(require_simulation_mode)])
 async def clear_sample_data(db: Session = Depends(get_db), user=Depends(require_role("admin"))) -> Dict[str, Any]:
     """
     Clear all demo sample data.
@@ -308,7 +320,7 @@ async def clear_sample_data(db: Session = Depends(get_db), user=Depends(require_
 
         for persona_config in DEMO_PERSONAS:
             email = persona_config["email"]
-            user_hash = generate_user_hash(email)
+            user_hash = privacy.hash_identity(email)
 
             # Find and delete user (cascade will handle related records)
             user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
@@ -341,7 +353,7 @@ async def clear_sample_data(db: Session = Depends(get_db), user=Depends(require_
         )
 
 
-@router.get("/sample-data-status")
+@router.get("/sample-data-status", dependencies=[Depends(require_simulation_mode)])
 async def get_sample_data_status(db: Session = Depends(get_db), user=Depends(require_role("admin"))) -> Dict[str, Any]:
     """
     Check if sample data is currently loaded.
@@ -350,7 +362,7 @@ async def get_sample_data_status(db: Session = Depends(get_db), user=Depends(req
 
     for persona_config in DEMO_PERSONAS:
         email = persona_config["email"]
-        user_hash = generate_user_hash(email)
+        user_hash = privacy.hash_identity(email)
 
         user = db.query(UserIdentity).filter_by(user_hash=user_hash).first()
         if user:

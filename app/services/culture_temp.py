@@ -1,15 +1,17 @@
 import networkx as nx
 import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+from uuid import UUID
 from sqlalchemy.orm import Session
 from app.models.analytics import RiskScore, GraphEdge
 
 class CultureThermometer:
     """Team-level contagion detection"""
-    
-    def __init__(self, db: Session):
+
+    def __init__(self, db: Session, tenant_id: Optional[UUID] = None):
         self.db = db
+        self.tenant_id = tenant_id
     
     def analyze_team(self, team_hashes: List[str]) -> Dict:
         """Detect resignation contagion risk"""
@@ -27,9 +29,12 @@ class CultureThermometer:
             }
         
         # 1. Aggregate sentiment velocity
-        risks = self.db.query(RiskScore).filter(
+        risk_query = self.db.query(RiskScore).filter(
             RiskScore.user_hash.in_(team_hashes)
-        ).all()
+        )
+        if self.tenant_id is not None:
+            risk_query = risk_query.filter(RiskScore.tenant_id == self.tenant_id)
+        risks = risk_query.all()
         
         avg_velocity = np.mean([r.velocity for r in risks]) if risks else 0
         critical_count = sum(1 for r in risks if r.risk_level == "CRITICAL")
@@ -74,10 +79,13 @@ class CultureThermometer:
     
     def _calculate_fragmentation(self, team_hashes: List[str]) -> float:
         """How disconnected is the team graph becoming?"""
-        edges = self.db.query(GraphEdge).filter(
+        edge_query = self.db.query(GraphEdge).filter(
             GraphEdge.source_hash.in_(team_hashes),
             GraphEdge.target_hash.in_(team_hashes)
-        ).all()
+        )
+        if self.tenant_id is not None:
+            edge_query = edge_query.filter(GraphEdge.tenant_id == self.tenant_id)
+        edges = edge_query.all()
         
         if len(edges) < 2:
             return 1.0  # Fully fragmented
@@ -96,19 +104,25 @@ class CultureThermometer:
     def _communication_decay(self, team_hashes: List[str]) -> float:
         """Are cross-team interactions decreasing?"""
         # Compare last 7 days vs previous 7 days
-        recent = datetime.utcnow() - timedelta(days=7)
-        previous = datetime.utcnow() - timedelta(days=14)
-        
-        recent_count = self.db.query(GraphEdge).filter(
+        recent = datetime.now(timezone.utc) - timedelta(days=7)
+        previous = datetime.now(timezone.utc) - timedelta(days=14)
+
+        recent_query = self.db.query(GraphEdge).filter(
             GraphEdge.source_hash.in_(team_hashes),
             GraphEdge.last_interaction >= recent
-        ).count()
-        
-        old_count = self.db.query(GraphEdge).filter(
+        )
+        if self.tenant_id is not None:
+            recent_query = recent_query.filter(GraphEdge.tenant_id == self.tenant_id)
+        recent_count = recent_query.count()
+
+        old_query = self.db.query(GraphEdge).filter(
             GraphEdge.source_hash.in_(team_hashes),
             GraphEdge.last_interaction < recent,
             GraphEdge.last_interaction >= previous
-        ).count()
+        )
+        if self.tenant_id is not None:
+            old_query = old_query.filter(GraphEdge.tenant_id == self.tenant_id)
+        old_count = old_query.count()
         
         if old_count == 0:
             return 0.0

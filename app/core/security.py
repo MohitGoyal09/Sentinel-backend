@@ -1,6 +1,8 @@
+import base64
 import hashlib
 import hmac
 import logging
+import os
 from cryptography.fernet import Fernet
 from app.config import get_settings
 
@@ -18,24 +20,24 @@ class PrivacyEngine:
     def __init__(self):
         raw_key = settings.encryption_key
 
-        # Check if it looks like a valid Fernet key (44 chars ending in =)
-        if len(raw_key) == 44 and raw_key.endswith("="):
-            self.key = raw_key.encode()
-        else:
-            # Fallback: Hash the simple string to get 32 bytes, then base64 encode it
-            # This ensures the app doesn't crash with a simple string password
-            import base64
-
+        try:
+            # Try to use the key as-is (valid Fernet key)
+            self.key = raw_key.encode() if isinstance(raw_key, str) else raw_key
+            self.cipher = Fernet(self.key)
+        except Exception:
+            if os.getenv("ENVIRONMENT") == "production":
+                raise ValueError(
+                    "ENCRYPTION_KEY must be a valid Fernet key in production. "
+                    "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+                )
+            logger.warning(
+                "ENCRYPTION_KEY is not a valid Fernet key. Deriving key via SHA-256. "
+                "This is insecure for production use."
+            )
             self.key = base64.urlsafe_b64encode(
                 hashlib.sha256(raw_key.encode()).digest()
             )
-
-        try:
             self.cipher = Fernet(self.key)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to initialise encryption cipher. Check ENCRYPTION_KEY environment variable."
-            ) from e
 
         self.salt = settings.vault_salt.encode()
 

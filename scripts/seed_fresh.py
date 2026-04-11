@@ -22,6 +22,13 @@ import random as _random
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+# Production safety guard
+_env = os.getenv("ENVIRONMENT", "development")
+if _env == "production":
+    print("ERROR: Refusing to run seed script in production environment.")
+    print("Set ENVIRONMENT to 'development' or 'staging' to proceed.")
+    sys.exit(1)
+
 sys.path.insert(0, os.getcwd())
 
 from app.core.database import SessionLocal, engine, get_supabase_admin_client

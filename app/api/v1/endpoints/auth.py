@@ -91,12 +91,15 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
             detail="This invitation has expired. Ask your admin to resend.",
         )
 
-    # 2. Create Supabase Auth user
+    # 2. Decrypt invitation email (stored encrypted, never plaintext)
+    invitation_email = privacy.decrypt(invitation.email_encrypted)
+
+    # 3. Create Supabase Auth user
     try:
         admin_client = get_supabase_admin_client()
         auth_response = admin_client.auth.admin.create_user(
             {
-                "email": invitation.email,
+                "email": invitation_email,
                 "password": body.password,
                 "email_confirm": True,
             }
@@ -108,17 +111,17 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
             detail="Failed to create auth user",
         )
 
-    # 3. Create UserIdentity
-    user_hash = privacy.hash_identity(invitation.email)
+    # 4. Create UserIdentity
+    user_hash = privacy.hash_identity(invitation_email)
     user_identity = UserIdentity(
         user_hash=user_hash,
         tenant_id=invitation.tenant_id,
-        email_encrypted=privacy.encrypt(invitation.email),
+        email_encrypted=privacy.encrypt(invitation_email),
     )
     db.add(user_identity)
     db.flush()
 
-    # 4. Create TenantMember
+    # 5. Create TenantMember
     member = TenantMember(
         tenant_id=invitation.tenant_id,
         user_hash=user_hash,
@@ -128,7 +131,7 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
     )
     db.add(member)
 
-    # 5. Create default notification preferences
+    # 6. Create default notification preferences
     try:
         from app.models.notification import NotificationPreference
         default_prefs = [
@@ -146,12 +149,10 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
     except Exception:
         pass  # Notifications are optional
 
-    # 6. Mark invitation accepted and clear plaintext email (PII)
-    original_email = invitation.email
+    # 7. Mark invitation accepted (email is already encrypted, no redaction needed)
     invitation.status = "accepted"
-    invitation.email = "REDACTED"
 
-    # 7. Audit log
+    # 8. Audit log
     PermissionService.log_data_access(
         db,
         actor_hash=user_hash,
@@ -172,11 +173,11 @@ def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Dep
 
     db.commit()
 
-    # 8. Sign in to get session tokens
+    # 9. Sign in to get session tokens
     try:
         supabase = get_supabase_client()
         signin = supabase.auth.sign_in_with_password(
-            {"email": original_email, "password": body.password}
+            {"email": invitation_email, "password": body.password}
         )
         session = signin.session
     except Exception as exc:

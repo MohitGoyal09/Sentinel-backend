@@ -28,3 +28,4 @@ pyotp>=2.9.0
 qrcode>=7.4
 itsdangerous>=2.1.0
 composio>=1.0.0rc2
+cachetools>=5.3.0

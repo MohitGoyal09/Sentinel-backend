@@ -37,6 +37,7 @@ class TokenBucket:
     def __init__(self):
         # {(client_ip, bucket_name): (tokens, last_refill_time)}
         self._buckets: Dict[Tuple[str, str], Tuple[float, float]] = {}
+        self._last_cleanup: float = time.time()
 
     def is_allowed(
         self,
@@ -49,6 +50,12 @@ class TokenBucket:
         Check if request is allowed and consume a token.
         Returns (allowed, rate_limit_info).
         """
+        # Periodically prune stale entries to prevent unbounded growth
+        now_mono = time.time()
+        if now_mono - self._last_cleanup > 60:
+            self.cleanup()
+            self._last_cleanup = now_mono
+
         key = (client_ip, bucket_name)
         now = time.time()
 
@@ -88,11 +95,39 @@ class TokenBucket:
             del self._buckets[k]
 
 
+_LUA_TOKEN_BUCKET = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local capacity = tonumber(ARGV[3])
+
+local data = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(data[1]) or capacity
+local last_refill = tonumber(data[2]) or now
+
+local elapsed = now - last_refill
+local refill = elapsed * rate
+tokens = math.min(capacity, tokens + refill)
+
+if tokens >= 1 then
+    tokens = tokens - 1
+    redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return 1
+else
+    redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return 0
+end
+"""
+
+
 class RedisTokenBucket:
     """Redis-backed distributed rate limiter with in-memory fallback."""
 
     def __init__(self, redis_url: Optional[str] = None):
         self.redis = None
+        self._lua_sha: Optional[str] = None
         if redis_url:
             try:
                 import redis
@@ -100,6 +135,8 @@ class RedisTokenBucket:
                 self.redis = redis.from_url(redis_url)
                 # Verify connection
                 self.redis.ping()
+                # Pre-load Lua script for atomic token bucket operations
+                self._lua_sha = self.redis.script_load(_LUA_TOKEN_BUCKET)
                 logger.info("Redis rate limiter connected")
             except Exception as e:
                 logger.warning("Redis unavailable, falling back to in-memory: %s", e)
@@ -133,35 +170,24 @@ class RedisTokenBucket:
         now = time.time()
 
         try:
-            pipe = self.redis.pipeline()
-            # Get current state
-            pipe.hgetall(key)
-            result = pipe.execute()
-            data = result[0] or {}
-
-            tokens = float(data.get(b"tokens", max_tokens))
-            last_refill = float(data.get(b"last_refill", now))
-
-            elapsed = now - last_refill
-            tokens = min(max_tokens, tokens + elapsed * refill_rate)
+            # Atomic token bucket via Lua script -- no TOCTOU race
+            allowed = self.redis.evalsha(
+                self._lua_sha, 1, key, now, refill_rate, max_tokens
+            )
 
             info = {
                 "X-RateLimit-Limit": str(max_tokens),
-                "X-RateLimit-Remaining": str(max(0, int(tokens) - 1)),
                 "X-RateLimit-Bucket": bucket_name,
             }
 
-            if tokens < 1.0:
-                retry_after = (1.0 - tokens) / refill_rate
-                info["Retry-After"] = str(int(retry_after) + 1)
-                self.redis.hset(key, mapping={"tokens": tokens, "last_refill": now})
-                self.redis.expire(key, 300)
+            if allowed:
+                info["X-RateLimit-Remaining"] = str(max(0, max_tokens - 1))
+                return True, info
+            else:
+                info["X-RateLimit-Remaining"] = "0"
+                retry_after = int(1.0 / refill_rate) + 1
+                info["Retry-After"] = str(retry_after)
                 return False, info
-
-            tokens -= 1.0
-            self.redis.hset(key, mapping={"tokens": tokens, "last_refill": now})
-            self.redis.expire(key, 300)
-            return True, info
 
         except Exception as e:
             logger.warning("Redis rate limit error, falling back: %s", e)
@@ -226,14 +252,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        # Get client IP (respect X-Forwarded-For for proxied setups)
-        client_ip = (
-            request.headers.get(
-                "X-Forwarded-For", request.client.host if request.client else "unknown"
-            )
-            .split(",")[0]
-            .strip()
-        )
+        # Get client IP -- use the direct connection address to prevent
+        # X-Forwarded-For spoofing by untrusted clients.
+        client_ip = request.client.host if request.client else "unknown"
 
         bucket_name, max_tokens, refill_rate = classify_route(request.url.path)
 

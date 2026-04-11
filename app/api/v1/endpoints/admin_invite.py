@@ -56,11 +56,12 @@ def create_invite(
     tenant_id = caller.tenant_id
 
     # Check for existing pending invite
+    email_hash = privacy.hash_identity(body.email)
     existing = (
         db.query(Invitation)
         .filter(
             Invitation.tenant_id == tenant_id,
-            Invitation.email == body.email,
+            Invitation.email_hash == email_hash,
             Invitation.status == "pending",
             Invitation.expires_at > datetime.now(timezone.utc).replace(tzinfo=None),
         )
@@ -99,7 +100,8 @@ def create_invite(
 
     invitation = Invitation(
         tenant_id=tenant_id,
-        email=body.email,
+        email_hash=email_hash,
+        email_encrypted=privacy.encrypt(body.email),
         token=token,
         role=body.role,
         team_id=team_uuid,
@@ -115,7 +117,7 @@ def create_invite(
         db,
         actor_hash=caller.user_hash,
         actor_role=caller.role,
-        target_hash=privacy.hash_identity(body.email),
+        target_hash=email_hash,
         action="user_invited",
         tenant_id=str(tenant_id),
         ip_address=request.headers.get(
@@ -123,7 +125,7 @@ def create_invite(
             request.client.host if request.client else "unknown",
         ),
         details={
-            "invited_email": body.email,
+            "invited_email_hash": email_hash,
             "role": body.role,
             "team_id": body.team_id,
         },
@@ -145,7 +147,7 @@ def create_invite(
 
     return {
         "id": str(invitation.id),
-        "email": invitation.email,
+        "email": body.email,
         "role": invitation.role,
         "team_id": str(invitation.team_id) if invitation.team_id else None,
         "status": invitation.status,

@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String
+from sqlalchemy import Column, DateTime, ForeignKey, Index, LargeBinary, String
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.identity import Base
@@ -28,7 +28,7 @@ class Invitation(Base):
 
     __tablename__ = "invitations"
     __table_args__ = (
-        Index("ix_invitations_tenant_email_status", "tenant_id", "email", "status"),
+        Index("ix_invitations_tenant_emailhash_status", "tenant_id", "email_hash", "status"),
         {"schema": "identity"},
     )
 
@@ -39,7 +39,8 @@ class Invitation(Base):
         nullable=False,
         index=True,
     )
-    email = Column(String(255), nullable=False)
+    email_hash = Column(String(32), nullable=False)
+    email_encrypted = Column(LargeBinary, nullable=False)
     token = Column(String(128), unique=True, nullable=False, index=True, default=_generate_token)
     role = Column(String(20), nullable=False)
     team_id = Column(

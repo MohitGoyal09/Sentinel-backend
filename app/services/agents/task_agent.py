@@ -752,12 +752,16 @@ class TaskAgent:
         """Build OpenAI-compatible message list for the fallback LLM."""
         messages: list[dict] = [{"role": "system", "content": system_content}]
 
+        ALLOWED_ROLES = {"user", "assistant"}
         recent = conversation_history[-_MAX_HISTORY_TURNS:]
         for entry in recent:
             if isinstance(entry, dict) and "role" in entry and "content" in entry:
-                messages.append(
-                    {"role": entry["role"], "content": entry["content"]}
-                )
+                role = entry.get("role", "")
+                if role in ALLOWED_ROLES:
+                    messages.append(
+                        {"role": role, "content": entry["content"]}
+                    )
+                # Skip system/tool/other injected roles
 
         messages.append({"role": "user", "content": message})
         return messages

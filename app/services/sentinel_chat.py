@@ -550,13 +550,17 @@ class SentinelChatService:
         messages: list[dict] = [{"role": "system", "content": full_system}]
 
         # Include conversation history (last N turns, exclude card messages)
+        _ALLOWED_ROLES = {"user", "assistant"}
         history = (request.context or {}).get("conversation_history", [])
         if isinstance(history, list):
             for msg in history[-_MAX_HISTORY_TURNS:]:
                 if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                    messages.append(
-                        {"role": msg["role"], "content": msg["content"]}
-                    )
+                    role = msg.get("role", "")
+                    if role in _ALLOWED_ROLES:
+                        messages.append(
+                            {"role": role, "content": msg["content"]}
+                        )
+                    # Skip system/tool/other injected roles
 
         messages.append({"role": "user", "content": request.message})
         return messages

@@ -150,7 +150,7 @@ class IntentClassifier:
             return ClassificationResult(
                 agent="general_agent",
                 confidence=0.2,
-                reasoning=f"Fallback due to classification error: {exc}",
+                reasoning="Fallback due to temporary classification issue",
                 is_followup=False,
             )
 
@@ -199,13 +199,17 @@ class IntentClassifier:
         ]
 
         # Include last 6 messages (3 turns) for follow-up detection
+        ALLOWED_ROLES = {"user", "assistant"}
         if conversation_history:
             recent = conversation_history[-6:]
             for msg in recent:
-                messages.append({
-                    "role": msg.get("role", "user"),
-                    "content": msg.get("content", ""),
-                })
+                role = msg.get("role", "")
+                if role in ALLOWED_ROLES:
+                    messages.append({
+                        "role": role,
+                        "content": msg.get("content", ""),
+                    })
+                # Skip system/tool/other injected roles
 
         # Current message with role context
         user_content = (

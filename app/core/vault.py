@@ -66,7 +66,13 @@ class VaultManager:
         
         # Delete from Vault B (Identity)
         self.i_db.query(UserIdentity).filter_by(user_hash=user_hash).delete()
-        self.i_db.query(AuditLog).filter_by(user_hash=user_hash).delete()
+        # Anonymize audit logs instead of deleting -- audit trail is immutable
+        self.i_db.query(AuditLog).filter(AuditLog.actor_hash == user_hash).update(
+            {"actor_hash": "DELETED"}, synchronize_session=False
+        )
+        self.i_db.query(AuditLog).filter(AuditLog.user_hash == user_hash).update(
+            {"user_hash": "DELETED"}, synchronize_session=False
+        )
         
         self.a_db.commit()
         self.i_db.commit()

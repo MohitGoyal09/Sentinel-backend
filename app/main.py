@@ -81,7 +81,19 @@ allowed_origins = [
     origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()
 ]
 
-# CORS configuration
+# Middleware ordering: FastAPI/Starlette uses LIFO — last added runs first
+# on request.  We want the request-phase order to be:
+#   1. RequestIDMiddleware   (assign ID first)
+#   2. SecurityMiddleware    (input validation)
+#   3. TenantContextMiddleware (JWT / auth)
+#   4. RateLimitMiddleware   (rate-limit before heavy auth work)
+#   5. CORSMiddleware        (runs last on request, first on response)
+#
+# Therefore we add them in REVERSE order:
+
+from app.middleware.security import SecurityMiddleware
+
+# Added first  -> runs last on request (response-phase first)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -102,19 +114,17 @@ app.add_middleware(
     ],
 )
 
-# Rate limiting middleware (token bucket per IP)
+# Rate limiting before auth — rejects abusive traffic early
 app.add_middleware(RateLimitMiddleware)
 
-# Tenant context middleware (extracts tenant_id from JWT or header)
+# Tenant context (includes JWT verification)
 app.add_middleware(TenantContextMiddleware)
 
-# Request ID middleware (assigns unique request IDs)
-app.add_middleware(RequestIDMiddleware)
-
-# Security middleware (OWASP headers, input sanitization, request validation)
-from app.middleware.security import SecurityMiddleware
-
+# Security headers and input sanitization
 app.add_middleware(SecurityMiddleware)
+
+# Request ID first on request (assigned before anything else)
+app.add_middleware(RequestIDMiddleware)
 
 
 # Security headers middleware
@@ -142,18 +152,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
 
     origin = request.headers.get("origin", "")
-    cors_origin = (
-        origin
-        if origin in allowed_origins
-        else allowed_origins[0]
-        if allowed_origins
-        else "*"
-    )
+    headers = {}
 
-    headers = {
-        "Access-Control-Allow-Origin": cors_origin,
-        "Access-Control-Allow-Credentials": "true",
-    }
+    # Only set CORS headers if the request origin matches an allowed origin
+    if origin in allowed_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
 
     # Handle preflight requests
     if request.method == "OPTIONS":
@@ -174,18 +178,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Ensure HTTP exceptions (401, 403, etc.) return CORS-friendly responses."""
     origin = request.headers.get("origin", "")
-    cors_origin = (
-        origin
-        if origin in allowed_origins
-        else allowed_origins[0]
-        if allowed_origins
-        else "*"
-    )
+    headers = {}
 
-    headers = {
-        "Access-Control-Allow-Origin": cors_origin,
-        "Access-Control-Allow-Credentials": "true",
-    }
+    # Only set CORS headers if the request origin matches an allowed origin
+    if origin in allowed_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
 
     # Merge with existing headers from the exception if any
     if exc.headers:

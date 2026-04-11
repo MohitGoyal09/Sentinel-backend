@@ -22,6 +22,9 @@ dependencies = [
     "structlog>=25.5.0",
     "supabase>=2.27.2",
     "uvicorn>=0.40.0",
+    "numpy>=2.4.4",
+    "scipy>=1.17.1",
+    "network>=0.1",
 ]
 
 [tool.pytest.ini_options]

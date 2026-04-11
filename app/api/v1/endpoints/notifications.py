@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from uuid import uuid4
 
@@ -9,6 +10,13 @@ from app.core.response import success_response, error_response
 from app.models.identity import UserIdentity, AuditLog
 from app.models.notification import Notification, NotificationPreference
 from app.api.deps.auth import get_current_user_identity
+
+
+class PreferenceUpdate(BaseModel):
+    """Schema for a single notification preference update."""
+    channel: str
+    notification_type: str
+    enabled: bool
 
 logger = logging.getLogger("sentinel.notifications")
 router = APIRouter()
@@ -149,7 +157,7 @@ async def get_preferences(
 
 @router.put("/preferences")
 async def update_preferences(
-    preferences: list[dict],
+    preferences: list[PreferenceUpdate],
     user: UserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
 ):
@@ -159,20 +167,20 @@ async def update_preferences(
             db.query(NotificationPreference)
             .filter_by(
                 user_hash=user.user_hash,
-                channel=pref["channel"],
-                notification_type=pref["notification_type"],
+                channel=pref.channel,
+                notification_type=pref.notification_type,
             )
             .first()
         )
         if existing:
-            existing.enabled = pref.get("enabled", True)
+            existing.enabled = pref.enabled
         else:
             db.add(
                 NotificationPreference(
                     user_hash=user.user_hash,
-                    channel=pref["channel"],
-                    notification_type=pref["notification_type"],
-                    enabled=pref.get("enabled", True),
+                    channel=pref.channel,
+                    notification_type=pref.notification_type,
+                    enabled=pref.enabled,
                 )
             )
     db.commit()

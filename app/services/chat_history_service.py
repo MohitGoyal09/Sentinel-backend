@@ -5,7 +5,7 @@ All queries are strictly scoped to the calling user's ``user_hash``.
 No cross-user data access is possible via this service.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -63,7 +63,7 @@ class ChatHistoryService:
             role=role,
             type=turn_type,
             content=content,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             metadata_=metadata,
         )
         self.db.add(turn)
@@ -78,7 +78,7 @@ class ChatHistoryService:
                 .first()
             )
             if parent_session:
-                parent_session.updated_at = datetime.utcnow()
+                parent_session.updated_at = datetime.now(timezone.utc)
                 self.db.flush()
 
         return turn
@@ -216,8 +216,8 @@ class ChatHistoryService:
             user_hash=user_hash,
             tenant_id=tenant_id,
             title=title,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         self.db.add(session)
         self.db.flush()
@@ -312,7 +312,7 @@ class ChatHistoryService:
             return None
 
         session.title = title
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return session
 
@@ -339,7 +339,7 @@ class ChatHistoryService:
             return False
 
         session.is_active = False
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return True
 
@@ -367,7 +367,7 @@ class ChatHistoryService:
             return None
 
         session.is_favorite = not session.is_favorite
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return session
 
@@ -421,6 +421,6 @@ class ChatHistoryService:
             title = first_message[:50].strip()
 
         session.title = title
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return session

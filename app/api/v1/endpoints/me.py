@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
-from app.models.analytics import RiskScore, RiskHistory, SkillProfile
+from app.models.analytics import RiskScore, RiskHistory, SkillProfile, GraphEdge, CentralityScore
+from app.models.chat_history import ChatHistory, ChatSession
+from app.models.notification import Notification, NotificationPreference
 from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService, UserRole
@@ -343,6 +345,20 @@ def delete_my_data(
     user_hash = current_user.user_hash
 
     try:
+        # Delete notifications
+        db.query(NotificationPreference).filter_by(user_hash=user_hash).delete()
+        db.query(Notification).filter_by(user_hash=user_hash).delete()
+
+        # Delete chat data
+        db.query(ChatHistory).filter_by(user_hash=user_hash).delete()
+        db.query(ChatSession).filter_by(user_hash=user_hash).delete()
+
+        # Delete graph data
+        db.query(GraphEdge).filter_by(source_hash=user_hash).delete()
+        db.query(GraphEdge).filter_by(target_hash=user_hash).delete()
+        db.query(CentralityScore).filter_by(user_hash=user_hash).delete()
+        db.query(SkillProfile).filter_by(user_hash=user_hash).delete()
+
         # Delete from Vault B (Identity)
         db.query(UserIdentity).filter_by(user_hash=user_hash).delete()
 
@@ -479,6 +495,34 @@ def get_user_profile(
     if target_member.team_id:
         team = db.query(Team).filter_by(id=target_member.team_id).first()
         team_name = team.name if team else None
+
+    # Check consent for managers viewing other users' detailed data
+    has_consent = True
+    if requester.role == "manager" and user_hash != current_user.user_hash:
+        perm_service = PermissionService(db)
+        can_view, reason = perm_service.can_manager_view_employee(
+            db, requester, user_hash
+        )
+        has_consent = can_view
+
+    # If manager lacks consent, return only basic info
+    if not has_consent:
+        return {
+            "success": True,
+            "data": {
+                "user_hash": user_hash,
+                "name": name or f"User {user_hash[:4]}",
+                "role": target_member.role,
+                "team": team_name,
+                "date_joined": target_identity.created_at.isoformat()
+                if target_identity and target_identity.created_at
+                else None,
+                "risk": None,
+                "skills": None,
+                "network": None,
+                "consent_restricted": True,
+            }
+        }
 
     # Risk data
     risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()

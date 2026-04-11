@@ -51,8 +51,9 @@ class SafetyValveAgent(BaseAgent):
         """
         # Validate required fields
         self.validate_payload(payload, ["user_hash"])
-        
+
         user_hash = payload["user_hash"]
+        tenant_id = payload.get("tenant_id")
         analysis_type = payload.get("analysis_type", "full")
         include_nudge = payload.get("include_nudge", True)
         
@@ -63,8 +64,8 @@ class SafetyValveAgent(BaseAgent):
         )
         
         with SessionLocal() as db:
-            engine = SafetyValve(db)
-            
+            engine = SafetyValve(db, tenant_id=tenant_id)
+
             # Run the analysis
             result = engine.analyze(user_hash)
             

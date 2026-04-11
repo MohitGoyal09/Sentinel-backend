@@ -11,12 +11,10 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger("sentinel.security")
 
-# Patterns that indicate potential attacks
-SQL_INJECTION_PATTERNS = [
-    r"(\b(union|select|insert|update|delete|drop|alter|create|exec)\b)",
-    r"(--|;|'|\")",
-    r"(\b(or|and)\b\s+\d+\s*=\s*\d+)",
-]
+# SQL injection checks removed: SQLAlchemy's parameterized queries already
+# prevent SQL injection.  The regex patterns caused false positives on
+# legitimate values like names with apostrophes or action-type filters
+# containing words such as "select", "update", or "delete".
 
 XSS_PATTERNS = [
     r"(<script[^>]*>)",
@@ -37,15 +35,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         # Validate request body size (max 10MB)
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > 10 * 1024 * 1024:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": "Request body too large"},
-            )
+        try:
+            if content_length and int(content_length) > 10 * 1024 * 1024:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
+                )
+        except (ValueError, TypeError):
+            pass
 
-        # Check URL query params for injection patterns
+        # Check URL query params for XSS patterns
         query_string = str(request.url.query)
-        if query_string and (check_sql_injection(query_string) or check_xss(query_string)):
+        if query_string and check_xss(query_string):
             logger.warning("Suspicious query string blocked: %s", path)
             return JSONResponse(
                 status_code=400,
@@ -67,17 +68,6 @@ def sanitize_input(text: str) -> str:
     if len(text) > 10000:
         text = text[:10000]
     return text
-
-
-def check_sql_injection(text: str) -> bool:
-    """Check if text contains potential SQL injection patterns."""
-    if not text:
-        return False
-    text_lower = text.lower()
-    for pattern in SQL_INJECTION_PATTERNS:
-        if re.search(pattern, text_lower):
-            return True
-    return False
 
 
 def check_xss(text: str) -> bool:

@@ -13,6 +13,8 @@ the chosen agent, giving the frontend visibility into routing decisions.
 import logging
 from typing import AsyncGenerator
 
+from cachetools import TTLCache
+
 from sqlalchemy.orm import Session
 
 from app.models.identity import UserIdentity
@@ -50,8 +52,8 @@ class SentinelOrchestrator:
             "task_agent": self._task_agent,
             "general_agent": self._general_agent,
         }
-        # Track last agent per session for follow-up routing
-        self._last_agent: dict[str, str] = {}
+        # Track last agent per session for follow-up routing (bounded, auto-expires)
+        self._last_agent: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
 
     async def process_stream(
         self,
