@@ -227,7 +227,10 @@ def apply_role_filter(db: Session, user_role: str, results: List[dict]) -> List[
 
 
 def execute_semantic_query(
-    db: Session, intent: dict, user_role: str, current_user_hash: str,
+    db: Session,
+    intent: dict,
+    user_role: str,
+    current_user_hash: str,
     tenant_id: str = None,
 ) -> List[dict]:
     """
@@ -240,9 +243,9 @@ def execute_semantic_query(
     if tenant_id:
         tenant_hashes = {
             tm.user_hash
-            for tm in db.query(TenantMember.user_hash).filter_by(
-                tenant_id=tenant_id
-            ).all()
+            for tm in db.query(TenantMember.user_hash)
+            .filter_by(tenant_id=tenant_id)
+            .all()
         }
 
     results = []
@@ -332,9 +335,7 @@ def execute_semantic_query(
             CentralityScore.unblocking_count >= min_unblocking,
         )
         if tenant_hashes is not None:
-            gems_query = gems_query.filter(
-                CentralityScore.user_hash.in_(tenant_hashes)
-            )
+            gems_query = gems_query.filter(CentralityScore.user_hash.in_(tenant_hashes))
         users = gems_query.all()
 
         for c in users:
@@ -362,9 +363,7 @@ def execute_semantic_query(
             RiskScore.risk_level.in_(["ELEVATED", "CRITICAL"])
         )
         if tenant_hashes is not None:
-            flight_query = flight_query.filter(
-                RiskScore.user_hash.in_(tenant_hashes)
-            )
+            flight_query = flight_query.filter(RiskScore.user_hash.in_(tenant_hashes))
         users = flight_query.all()
 
         for u in users:
@@ -394,9 +393,7 @@ def execute_semantic_query(
     else:
         general_query = db.query(RiskScore)
         if tenant_hashes is not None:
-            general_query = general_query.filter(
-                RiskScore.user_hash.in_(tenant_hashes)
-            )
+            general_query = general_query.filter(RiskScore.user_hash.in_(tenant_hashes))
         users = general_query.all()
 
         for u in users:
@@ -641,9 +638,7 @@ def get_team_narrative_data(db: Session, team_hash: str, days: int = 30) -> dict
     try:
         team_uuid = _uuid.UUID(team_hash)
         tenant_members = (
-            db.query(_TenantMember.user_hash)
-            .filter_by(team_id=team_uuid)
-            .all()
+            db.query(_TenantMember.user_hash).filter_by(team_id=team_uuid).all()
         )
         resolved_member_hashes = [tm.user_hash for tm in tenant_members]
     except (ValueError, AttributeError):
@@ -652,11 +647,7 @@ def get_team_narrative_data(db: Session, team_hash: str, days: int = 30) -> dict
     # If no members found via UUID, fall back: treat team_hash as a user_hash and
     # look up that user's team, then fetch all members of that team.
     if not resolved_member_hashes:
-        source_member = (
-            db.query(_TenantMember)
-            .filter_by(user_hash=team_hash)
-            .first()
-        )
+        source_member = db.query(_TenantMember).filter_by(user_hash=team_hash).first()
         if source_member and source_member.team_id:
             tenant_members = (
                 db.query(_TenantMember.user_hash)
@@ -796,7 +787,9 @@ async def generate_risk_report(
     # Permission check
     if member.role == "employee":
         if member.user_hash != user_hash:
-            raise HTTPException(status_code=403, detail="Employees can only view their own risk report")
+            raise HTTPException(
+                status_code=403, detail="Employees can only view their own risk report"
+            )
     elif member.role == "manager":
         # Managers can only view risk reports for members on the same team
         if member.user_hash != user_hash:
@@ -806,7 +799,10 @@ async def generate_risk_report(
                 .first()
             )
             if not target_member or target_member.team_id != member.team_id:
-                raise HTTPException(status_code=403, detail="Managers can only view risk reports for their team")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Managers can only view risk reports for their team",
+                )
     # admin: can view anyone
 
     try:
@@ -1081,7 +1077,9 @@ async def semantic_query(
         suggested_action = None
 
         if risk == "critical":
-            insights.append("Showing critical burnout indicators requiring immediate attention")
+            insights.append(
+                "Showing critical burnout indicators requiring immediate attention"
+            )
             suggested_action = "Schedule an urgent 1:1 check-in"
         elif risk == "elevated":
             insights.append("Elevated risk detected — early intervention recommended")
@@ -1091,18 +1089,25 @@ async def semantic_query(
 
         if vel is not None:
             if vel < 0.4:
-                insights.append(f"Low velocity ({vel:.2f}) — potential overload or disengagement")
+                insights.append(
+                    f"Low velocity ({vel:.2f}) — potential overload or disengagement"
+                )
             elif vel > 0.8:
-                insights.append(f"High velocity ({vel:.2f}) — strong output but monitor for sustainability")
+                insights.append(
+                    f"High velocity ({vel:.2f}) — strong output but monitor for sustainability"
+                )
 
         betw = r.get("betweenness")
         if betw is not None and betw > 0.6:
-            insights.append(f"High betweenness centrality ({betw:.2f}) — key connector in team network")
+            insights.append(
+                f"High betweenness centrality ({betw:.2f}) — key connector in team network"
+            )
 
         query_results.append(
             QueryResult(
                 user_hash=r.get("user_hash", ""),
-                name=r.get("display_name") or f"Team Member {r.get('user_hash', '')[:6]}",
+                name=r.get("display_name")
+                or f"Team Member {r.get('user_hash', '')[:6]}",
                 risk_level=risk,
                 velocity=vel,
                 betweenness=betw,
@@ -1150,10 +1155,12 @@ def get_user_context_data(db: Session, user_hash: str) -> dict:
     if tenant_member and member_role == "manager" and tenant_member.team_id:
         team_member_hashes = [
             tm.user_hash
-            for tm in db.query(TenantMember.user_hash).filter_by(
+            for tm in db.query(TenantMember.user_hash)
+            .filter_by(
                 team_id=tenant_member.team_id,
                 tenant_id=tenant_member.tenant_id,
-            ).all()
+            )
+            .all()
         ]
         if team_member_hashes:
             team_risks = (
@@ -1180,9 +1187,7 @@ def get_user_context_data(db: Session, user_hash: str) -> dict:
             .all()
         }
         all_risks = (
-            db.query(RiskScore)
-            .filter(RiskScore.user_hash.in_(tenant_hashes))
-            .all()
+            db.query(RiskScore).filter(RiskScore.user_hash.in_(tenant_hashes)).all()
         )
         total_users = len(all_risks)
         org_at_risk = sum(
@@ -1209,12 +1214,17 @@ def build_chat_prompt(
     # Format context based on role
     context_str = format_context_for_role(context, role)
 
+    prev_conversation = (
+        f"PREVIOUS CONVERSATION:\n{conversation_history}\n"
+        if conversation_history
+        else ""
+    )
     prompt = f"""{system_prompt}
 
 USER CONTEXT:
 {context_str}
 
-{"PREVIOUS CONVERSATION:\n" + conversation_history + "\n" if conversation_history else ""}USER MESSAGE:
+{prev_conversation}USER MESSAGE:
 {message}
 
 Provide a helpful, personalized response based on the user's role ({role}) and their context. Be concise but informative."""
@@ -1269,9 +1279,7 @@ async def chat(
     Persists both user and assistant turns to ChatHistory after response.
     """
     # Build a lightweight UserIdentity-like object from the member's data
-    current_user = (
-        db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
-    )
+    current_user = db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1302,7 +1310,9 @@ async def chat(
             effective_session_id = str(session.id)
 
         # Create a copy with conversation_id set (Fix H3: don't mutate the original)
-        effective_request = request.model_copy(update={"conversation_id": effective_session_id})
+        effective_request = request.model_copy(
+            update={"conversation_id": effective_session_id}
+        )
 
         result = await sentinel_chat_service.respond(
             effective_request, current_user, tenant_id, db
@@ -1312,10 +1322,18 @@ async def chat(
         conversation_id = result.conversation_id or effective_session_id
         if result.response:
             chat_history_svc.persist_turn(
-                member.user_hash, tenant_id, conversation_id, "user", request.message,
+                member.user_hash,
+                tenant_id,
+                conversation_id,
+                "user",
+                request.message,
             )
             chat_history_svc.persist_turn(
-                member.user_hash, tenant_id, conversation_id, "assistant", result.response,
+                member.user_hash,
+                tenant_id,
+                conversation_id,
+                "assistant",
+                result.response,
                 metadata={"role": result.role},
             )
             db.commit()
@@ -1323,10 +1341,14 @@ async def chat(
             # Auto-title (Fix C1: run in thread to avoid blocking event loop)
             # Fix H2: remove stale ORM guard, let service method decide
             import asyncio
+
             try:
                 await asyncio.to_thread(
                     chat_history_svc.auto_title_session,
-                    member.user_hash, tenant_id, effective_session_id, effective_request.message,
+                    member.user_hash,
+                    tenant_id,
+                    effective_session_id,
+                    effective_request.message,
                 )
                 db.commit()
             except Exception:
@@ -1340,7 +1362,9 @@ async def chat(
     except Exception as e:
         logger.error(
             "Error processing chat request for %s: %s",
-            member.user_hash, e, exc_info=True,
+            member.user_hash,
+            e,
+            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1375,8 +1399,7 @@ async def submit_chat_feedback(
         )
 
     logger.info(
-        "chat_feedback received: conversation_id=%s message_index=%s "
-        "rating=%s user=%s",
+        "chat_feedback received: conversation_id=%s message_index=%s rating=%s user=%s",
         conversation_id,
         message_index,
         rating,
@@ -1398,9 +1421,7 @@ async def chat_stream(
     Wraps the stream to accumulate the full response text and persist
     both user and assistant turns to ChatHistory after completion.
     """
-    current_user = (
-        db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
-    )
+    current_user = db.query(UserIdentity).filter_by(user_hash=member.user_hash).first()
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1430,7 +1451,9 @@ async def chat_stream(
         effective_session_id = str(_session.id)
 
     # Create a copy with conversation_id set (Fix H3: don't mutate the original)
-    effective_request = request.model_copy(update={"conversation_id": effective_session_id})
+    effective_request = request.model_copy(
+        update={"conversation_id": effective_session_id}
+    )
 
     async def _stream_and_persist() -> AsyncGenerator[str, None]:
         """Wrap the inner stream to capture accumulated text for persistence."""
@@ -1504,8 +1527,11 @@ async def chat_stream(
         if resolved_conv_id:
             try:
                 chat_history_svc.persist_turn(
-                    member.user_hash, tenant_id, resolved_conv_id,
-                    "user", request.message,
+                    member.user_hash,
+                    tenant_id,
+                    resolved_conv_id,
+                    "user",
+                    request.message,
                 )
 
                 # Persist tool_call and connection_link events so they
@@ -1524,8 +1550,11 @@ async def chat_stream(
 
                 if full_response:
                     chat_history_svc.persist_turn(
-                        member.user_hash, tenant_id, resolved_conv_id,
-                        "assistant", full_response,
+                        member.user_hash,
+                        tenant_id,
+                        resolved_conv_id,
+                        "assistant",
+                        full_response,
                         metadata={"role": member.role},
                     )
                 db.commit()
@@ -1533,14 +1562,19 @@ async def chat_stream(
                 # Auto-title after first message (runs sync — acceptable in stream cleanup)
                 try:
                     chat_history_svc.auto_title_session(
-                        member.user_hash, tenant_id, effective_session_id, effective_request.message
+                        member.user_hash,
+                        tenant_id,
+                        effective_session_id,
+                        effective_request.message,
                     )
                     db.commit()
                 except Exception:
                     pass  # Non-critical, don't break the stream
             except Exception as persist_err:
                 logger.error(
-                    "Failed to persist chat turns: %s", persist_err, exc_info=True,
+                    "Failed to persist chat turns: %s",
+                    persist_err,
+                    exc_info=True,
                 )
 
     try:
@@ -1558,7 +1592,9 @@ async def chat_stream(
     except Exception as e:
         logger.error(
             "Error processing streaming chat request for %s: %s",
-            member.user_hash, e, exc_info=True,
+            member.user_hash,
+            e,
+            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1695,9 +1731,7 @@ def get_chat_session(
 ):
     """Return a single session with its full message history."""
     service = ChatHistoryService(db)
-    session = service.get_session(
-        member.user_hash, str(member.tenant_id), session_id
-    )
+    session = service.get_session(member.user_hash, str(member.tenant_id), session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
