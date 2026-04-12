@@ -132,6 +132,36 @@ class DataSyncService:
                             self.db.add(event)
                             ingested += 1
 
+                            # Create GraphEdge for PR reviews
+                            if normalized.event_type in ("pr_review", "code_review"):
+                                author_email = commit_data.get("author_email", "")
+                                if author_email and author_email != "unknown@unknown.com":
+                                    author_hash = privacy.hash_identity(author_email)
+                                    if author_hash != user_hash:
+                                        author_exists = self.db.query(UserIdentity).filter_by(
+                                            user_hash=author_hash
+                                        ).first()
+                                        if author_exists:
+                                            comment_len = normalized.metadata.get("comment_length", 100)
+                                            weight = min(comment_len / 500, 1.0)
+                                            existing_edge = self.db.query(GraphEdge).filter_by(
+                                                source_hash=user_hash,
+                                                target_hash=author_hash,
+                                                edge_type="code_review",
+                                            ).first()
+                                            if existing_edge:
+                                                existing_edge.weight = max(existing_edge.weight, weight)
+                                                existing_edge.last_interaction = normalized.timestamp
+                                            else:
+                                                self.db.add(GraphEdge(
+                                                    source_hash=user_hash,
+                                                    target_hash=author_hash,
+                                                    tenant_id=tenant_id,
+                                                    weight=weight,
+                                                    last_interaction=normalized.timestamp,
+                                                    edge_type="code_review",
+                                                ))
+
                         except Exception as e:
                             logger.debug("Failed to parse commit: %s", e)
                             errors += 1
@@ -260,6 +290,107 @@ class DataSyncService:
             "errors": errors,
         }
 
+    async def sync_calendar(self, entity_id: str, user_hash: str,
+                            tenant_id: Optional[str] = None, days: int = 14) -> dict:
+        """Pull Google Calendar events via Composio and store as Events."""
+        if not composio_client.is_available():
+            return {"success": False, "error": "Composio not configured", "ingested": 0}
+
+        ingested = 0
+        errors = 0
+
+        try:
+            time_min = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            time_max = datetime.now(timezone.utc).isoformat()
+
+            result = await composio_client.execute_tool(
+                "googlecalendar", "list_events",
+                {"timeMin": time_min, "timeMax": time_max, "maxResults": self._max_events_per_call},
+                entity_id
+            )
+
+            if not result.get("success"):
+                return {"success": False, "error": "Calendar fetch failed", "ingested": 0}
+
+            events_data = []
+            result_data = result.get("result", {})
+            if isinstance(result_data, dict):
+                data = result_data.get("data", result_data)
+                if isinstance(data, dict):
+                    events_data = data.get("items", [])
+                elif isinstance(data, list):
+                    events_data = data
+            elif isinstance(result_data, list):
+                events_data = result_data
+
+            for cal_event in events_data:
+                try:
+                    start = cal_event.get("start", {})
+                    start_str = start.get("dateTime", start.get("date", ""))
+                    if not start_str:
+                        continue
+
+                    try:
+                        event_time = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+
+                    end = cal_event.get("end", {})
+                    end_str = end.get("dateTime", end.get("date", ""))
+                    duration_minutes = 30
+                    if end_str:
+                        try:
+                            end_time = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                            duration_minutes = max(1, int((end_time - event_time).total_seconds() / 60))
+                        except ValueError:
+                            pass
+
+                    hour = event_time.hour
+                    after_hours = hour >= 18 or hour < 8
+                    attendee_count = len(cal_event.get("attendees", []))
+                    event_id = cal_event.get("id", "")
+
+                    if event_id:
+                        existing = self.db.query(Event).filter(
+                            Event.user_hash == user_hash,
+                            Event.event_type == "meeting",
+                        ).filter(
+                            Event.metadata_["source_id"].astext == event_id
+                        ).first()
+                        if existing:
+                            continue
+
+                    event = Event(
+                        user_hash=user_hash,
+                        tenant_id=tenant_id,
+                        timestamp=event_time,
+                        event_type="meeting",
+                        metadata_={
+                            "duration_minutes": duration_minutes,
+                            "attendee_count": attendee_count,
+                            "after_hours": after_hours,
+                            "is_recurring": bool(cal_event.get("recurringEventId")),
+                            "source": "google_calendar",
+                            "source_id": event_id,
+                        },
+                    )
+                    self.db.add(event)
+                    ingested += 1
+
+                except Exception as e:
+                    logger.debug("Failed to parse calendar event: %s", e)
+                    errors += 1
+
+            if ingested > 0:
+                self.db.commit()
+
+        except Exception as e:
+            logger.error("sync_calendar failed: %s", e)
+            self.db.rollback()
+            return {"success": False, "error": str(e), "ingested": ingested, "errors": errors}
+
+        return {"success": True, "source": "calendar", "ingested": ingested, "errors": errors}
+
     async def sync_all_connected(self, entity_id: str, user_hash: str,
                                   tenant_id: Optional[str] = None) -> dict:
         """Sync all connected tools for a user."""
@@ -271,6 +402,8 @@ class DataSyncService:
             results["github"] = await self.sync_github(entity_id, user_hash, tenant_id)
         if "slack" in connected_lower or "slackbot" in connected_lower:
             results["slack"] = await self.sync_slack(entity_id, user_hash, tenant_id)
+        if "googlecalendar" in connected_lower or "google_calendar" in connected_lower:
+            results["calendar"] = await self.sync_calendar(entity_id, user_hash, tenant_id)
 
         total_ingested = sum(r.get("ingested", 0) for r in results.values())
         return {
@@ -281,14 +414,44 @@ class DataSyncService:
         }
 
 
-def background_sync(entity_id: str, user_hash: str, tenant_id: str):
-    """Background task wrapper with own DB session."""
+def background_sync(entity_id: str, user_hash: str, tenant_id: str, source: str = "all"):
+    """Background task wrapper with own DB session. Stores results in pipeline metrics."""
+    from app.api.v1.endpoints.ingestion import _pipeline_metrics
     try:
         with SessionLocal() as db:
             service = DataSyncService(db)
-            asyncio.run(service.sync_all_connected(entity_id, user_hash, tenant_id))
-        # Trigger engine recomputation with separate session
+            if source == "github":
+                result = asyncio.run(service.sync_github(entity_id, user_hash, tenant_id))
+                results = {"github": result}
+            elif source == "slack":
+                result = asyncio.run(service.sync_slack(entity_id, user_hash, tenant_id))
+                results = {"slack": result}
+            elif source == "calendar":
+                result = asyncio.run(service.sync_calendar(entity_id, user_hash, tenant_id))
+                results = {"calendar": result}
+            else:
+                full = asyncio.run(service.sync_all_connected(entity_id, user_hash, tenant_id))
+                results = full.get("sources", {})
+
+        # Track ingested counts per source
+        for src_name, src_result in results.items():
+            count = src_result.get("ingested", 0)
+            if count > 0:
+                _pipeline_metrics["events_by_source"][src_name] = (
+                    _pipeline_metrics["events_by_source"].get(src_name, 0) + count
+                )
+                _pipeline_metrics["total_ingested"] += count
+
+        # Trigger engine recomputation
         from app.api.v1.endpoints.engines import run_all_engines
         run_all_engines(user_hash)
+
+        # Record engine run result
+        _pipeline_metrics["last_engine_run"] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "user_hash": user_hash[:8],
+            "sources_synced": {k: v.get("ingested", 0) for k, v in results.items()},
+        }
+
     except Exception as e:
         logger.error("Background sync failed for %s: %s", user_hash[:8], e)

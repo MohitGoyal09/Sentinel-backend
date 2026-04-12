@@ -454,10 +454,14 @@ async def sync_connected_tools(
         raise HTTPException(status_code=400, detail="Unable to resolve user identity for sync")
 
     background_tasks.add_task(
-        background_sync, entity_id, user.user_hash, str(user.tenant_id)
+        background_sync, entity_id, user.user_hash, str(user.tenant_id), source
     )
 
-    return {"success": True, "message": f"Syncing {source} data in background. Check back in ~30 seconds."}
+    return {
+        "success": True,
+        "source": source,
+        "message": f"Syncing {source} data in background. Check status for results.",
+    }
 
 
 @router.get("/sample-csv")
