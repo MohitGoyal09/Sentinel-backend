@@ -22,6 +22,8 @@ from app.models.analytics import Event
 from app.models.identity import UserIdentity
 from app.models.tenant import TenantMember
 from app.services.audit_service import AuditService, AuditAction
+from app.integrations.composio_client import composio_client
+from app.config import get_settings
 
 logger = logging.getLogger("sentinel.ingestion_api")
 router = APIRouter()
@@ -88,7 +90,7 @@ class IngestionEvent(BaseModel):
 # ============================================
 
 @router.get("/status")
-def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
+async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
     """Get full pipeline status including connectors, stages, metrics."""
     # Query actual DB counts
     try:
@@ -104,18 +106,42 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
         total_users = 0
         recent_count = 0
 
+    # Query real Composio connection status
+    connected_tools: list[str] = []
+    try:
+        settings = get_settings()
+        identity = db.query(UserIdentity).filter_by(user_hash=user.user_hash).first()
+        email = privacy.decrypt(identity.email_encrypted) if identity else ""
+        entity_id = f"{email}-{settings.environment}" if email else ""
+        if entity_id and composio_client.is_available():
+            connected_tools = await composio_client.get_connected_integrations(entity_id)
+            connected_tools = [t.lower() for t in connected_tools]
+    except Exception as e:
+        logger.debug("Could not fetch Composio connections: %s", e)
+
+    TOOL_CONNECTOR_MAP = {
+        "github": "Git", "slack": "Slack", "slackbot": "Slack",
+        "googlecalendar": "Calendar", "google_calendar": "Calendar",
+    }
+
+    def connector_status(name: str) -> str:
+        for tool_slug, connector_name in TOOL_CONNECTOR_MAP.items():
+            if connector_name == name and tool_slug in connected_tools:
+                return "connected"
+        return "not_configured"
+
     csv_events = _pipeline_metrics["events_by_source"].get("csv", 0)
     connectors = [
         ConnectorInfo(
             name="Git",
-            status="not_configured",
+            status=connector_status("Git"),
             icon="git-branch",
             events_ingested=_pipeline_metrics["events_by_source"].get("git", 0),
             description="Commit history, PR reviews, code frequency. Connect via Integrations.",
         ),
         ConnectorInfo(
             name="Slack",
-            status="not_configured",
+            status=connector_status("Slack"),
             icon="message-square",
             events_ingested=_pipeline_metrics["events_by_source"].get("slack", 0),
             description="Message patterns, response times. Connect via Integrations.",
@@ -129,9 +155,9 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
         ),
         ConnectorInfo(
             name="Calendar",
-            status="not_configured",
+            status=connector_status("Calendar"),
             icon="calendar",
-            events_ingested=0,
+            events_ingested=_pipeline_metrics["events_by_source"].get("calendar", 0),
             description="Meeting load, focus time. Connect via Integrations.",
         ),
         ConnectorInfo(
@@ -189,7 +215,7 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
     ]
 
     return {
-        "mode": "simulation",  # or "live" in production
+        "mode": "live" if connected_tools else "simulation",
         "connectors": [c.model_dump() for c in connectors],
         "pipeline_stages": [s.model_dump() for s in pipeline_stages],
         "metrics": {
@@ -209,6 +235,7 @@ def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role
             ),
         },
         "recent_events": _pipeline_metrics["recent_events"][-30:],
+        "last_engine_run": _pipeline_metrics.get("last_engine_run"),
     }
 
 
@@ -313,6 +340,7 @@ async def upload_csv(file: UploadFile = File(...), background_tasks: BackgroundT
             # Store event
             db_event = Event(
                 user_hash=user_hash,
+                tenant_id=user.tenant_id,
                 event_type=event_type,
                 timestamp=ts,
                 metadata_=metadata if metadata else {"source": source},

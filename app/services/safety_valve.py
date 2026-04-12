@@ -255,7 +255,7 @@ class SafetyValve:
     def _calculate_belongingness(self, user_hash: str, events: List[Event]) -> float:
         """Measure social connection"""
         interactions = [
-            e for e in events if e.event_type in ["slack_message", "pr_comment"]
+            e for e in events if e.event_type in ["slack_message", "pr_comment", "pr_review"]
         ]
         if not interactions:
             return 0.5
