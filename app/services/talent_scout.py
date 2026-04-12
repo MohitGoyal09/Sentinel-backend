@@ -51,45 +51,69 @@ class TalentScout:
         if not G.nodes():
             return {"status": "NO_DATA"}
 
-        # Calculate metrics
-        # Use k-approximation for betweenness if graph is large (>100 nodes)
-        # This significantly reduces computation time from O(VE) to O(kE)
-        k = 100 if len(G) > 100 else None
-        betweenness = nx.betweenness_centrality(G, weight="weight", k=k)
-        eigenvector = self._calculate_eigenvector_centrality(G)
-        unblocking = self._calculate_unblocking_metrics(G)
+        # Check for existing CentralityScore records (from seed or prior computation).
+        # If they exist, use them directly instead of recalculating — this preserves
+        # carefully curated seed data for demos while still supporting live recalculation
+        # when no scores exist.
+        existing_scores = {
+            cs.user_hash: cs
+            for cs in self.db.query(CentralityScore)
+            .filter(CentralityScore.user_hash.in_(tenant_hashes))
+            .all()
+        }
+
+        if existing_scores:
+            # Use existing scores — don't overwrite seed data
+            betweenness = {h: cs.betweenness for h, cs in existing_scores.items()}
+            eigenvector = {h: cs.eigenvector for h, cs in existing_scores.items()}
+            unblocking = {h: cs.unblocking_count for h, cs in existing_scores.items()}
+            # Fill in any graph nodes that don't have scores yet
+            for node in G.nodes():
+                if node not in betweenness:
+                    betweenness[node] = 0.0
+                    eigenvector[node] = 0.0
+                    unblocking[node] = 0
+        else:
+            # No existing scores — calculate from graph topology
+            k = 100 if len(G) > 100 else None
+            betweenness = nx.betweenness_centrality(G, weight="weight", k=k)
+            eigenvector = self._calculate_eigenvector_centrality(G)
+            unblocking = self._calculate_unblocking_metrics(G)
+
+            # Persist calculated scores
+            for user_hash in G.nodes():
+                score_obj = CentralityScore(
+                    user_hash=user_hash,
+                    betweenness=betweenness.get(user_hash, 0),
+                    eigenvector=eigenvector.get(user_hash, 0),
+                    unblocking_count=unblocking.get(user_hash, 0),
+                    knowledge_transfer_score=self._knowledge_transfer_score(user_hash),
+                )
+                self.db.merge(score_obj)
 
         # Calculate layout positions
-        # Center at (300, 210) to match frontend SVG viewBox 600x420
         try:
             pos = nx.spring_layout(G, center=(300, 210), scale=180, seed=42)
         except Exception:
-            # Fallback if layout fails (e.g. empty graph or circular dependencies)
             pos = {n: (300, 210) for n in G.nodes()}
 
         results = []
         for user_hash in G.nodes():
-            score_obj = CentralityScore(
-                user_hash=user_hash,
-                betweenness=betweenness.get(user_hash, 0),
-                eigenvector=eigenvector.get(user_hash, 0),
-                unblocking_count=unblocking.get(user_hash, 0),
-                knowledge_transfer_score=self._knowledge_transfer_score(user_hash),
-            )
-            self.db.merge(score_obj)
+            bw = betweenness.get(user_hash, 0)
+            ev = eigenvector.get(user_hash, 0)
+            unb = unblocking.get(user_hash, 0)
             results.append(
                 {
                     "user_hash": user_hash,
-                    "betweenness": round(betweenness.get(user_hash, 0), 3),
-                    "eigenvector": round(eigenvector.get(user_hash, 0), 3),
-                    "unblocking": unblocking.get(user_hash, 0),
-                    "is_hidden_gem": self._is_hidden_gem(score_obj),
+                    "betweenness": round(bw, 3),
+                    "eigenvector": round(ev, 3),
+                    "unblocking": unb,
+                    "is_hidden_gem": bw > 0.3 and unb > 5 and ev < 0.2,
                 }
             )
 
         # Build response nodes/edges
         graph_nodes = []
-        # Import random for basic visualization variation if needed, or just static
 
         for node in G.nodes():
             bw = betweenness.get(node, 0)
