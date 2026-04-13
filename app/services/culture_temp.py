@@ -63,8 +63,11 @@ class CultureThermometer:
             "engine": "Culture Thermometer",
             "team_risk": risk,
             "metrics": {
+                "total_members": len(team_hashes),
                 "avg_velocity": round(avg_velocity, 2),
                 "critical_members": critical_count,
+                "elevated_members": sum(1 for r in risks if r.risk_level == "ELEVATED"),
+                "healthy_members": sum(1 for r in risks if r.risk_level == "LOW"),
                 "graph_fragmentation": round(fragmentation, 2),
                 "comm_decay_rate": round(comm_decay, 2)
             },
