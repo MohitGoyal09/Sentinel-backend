@@ -73,7 +73,7 @@ def code_review_quality(burnout_progress: float, rng: np.random.Generator) -> Di
     thoroughness = max(0.1, float(inverse_sigmoid(burnout_progress, 0.5, 6)))
 
     # Approval-without-reading probability increases
-    rubber_stamp = burnout_progress > 0.7 and rng.random() < burnout_progress * 0.6
+    rubber_stamp = bool(burnout_progress > 0.7 and rng.random() < burnout_progress * 0.6)
 
     return {
         "comment_length": comment_length,
@@ -151,7 +151,7 @@ class RealTimeSimulator:
         self.db = db_session
         self.rng = np.random.default_rng(42)
 
-    def create_persona(self, persona_type: str, user_hash: str, team_hash: str = None) -> List[Event]:
+    def create_persona(self, persona_type: str, user_hash: str, team_hash: str = None, tenant_id=None) -> List[Event]:
         """Generate 30 days of research-backed behavioral history."""
         if persona_type not in PERSONA_CONFIGS:
             import logging
@@ -190,13 +190,14 @@ class RealTimeSimulator:
                 commit_hour = rng.integers(start_hour, min(end_hour + 1, 24))
                 events.append(Event(
                     user_hash=user_hash,
+                    tenant_id=tenant_id,
                     timestamp=current_date.replace(
-                        hour=commit_hour,
+                        hour=int(commit_hour),
                         minute=int(rng.integers(0, 60)),
                     ),
                     event_type="commit",
                     metadata_={
-                        "after_hours": commit_hour > 19,
+                        "after_hours": bool(commit_hour > 19),
                         "context_switches": int(rng.poisson(2 + burnout * 8)),
                         "lines_changed": int(rng.exponential(50 * (1 + burnout))),
                         "is_weekend": is_weekend,
@@ -218,10 +219,10 @@ class RealTimeSimulator:
 
                 # Social withdrawal: reply probability drops with burnout
                 reply_prob = max(0.1, 0.7 * (1 - burnout * 0.8))
-                is_reply = rng.random() < reply_prob
+                is_reply = bool(rng.random() < reply_prob)
 
                 # Mentions resignation in final burnout phase
-                mentions_resignation = (
+                mentions_resignation = bool(
                     persona_type == "maria_contagion" and
                     burnout > 0.8 and
                     rng.random() < 0.3
@@ -233,13 +234,14 @@ class RealTimeSimulator:
                 events.append(Event(
                     user_hash=user_hash,
                     target_user_hash=target,
+                    tenant_id=tenant_id,
                     timestamp=current_date.replace(
-                        hour=msg_hour,
+                        hour=int(msg_hour),
                         minute=int(rng.integers(0, 60)),
                     ),
                     event_type="slack_message",
                     metadata_={
-                        "after_hours": msg_hour > 19,
+                        "after_hours": bool(msg_hour > 19),
                         "sentiment": sentiment,
                         "sentiment_score": round(sentiment_score, 2),
                         "is_reply": is_reply,
@@ -265,15 +267,16 @@ class RealTimeSimulator:
                 events.append(Event(
                     user_hash=user_hash,
                     target_user_hash=target,
+                    tenant_id=tenant_id,
                     timestamp=current_date.replace(
-                        hour=review_hour,
+                        hour=int(review_hour),
                         minute=int(rng.integers(0, 60)),
                     ),
                     event_type="pr_review",
                     metadata_={
-                        "after_hours": review_hour > 19,
+                        "after_hours": bool(review_hour > 19),
                         **review_meta,
-                        "unblocked": True if persona_type == "sarah_gem" else rng.random() > 0.5,
+                        "unblocked": True if persona_type == "sarah_gem" else bool(rng.random() > 0.5),
                     },
                 ))
 
@@ -289,6 +292,7 @@ class RealTimeSimulator:
                     events.append(Event(
                         user_hash=user_hash,
                         target_user_hash=str(target),
+                        tenant_id=tenant_id,
                         timestamp=current_date.replace(
                             hour=int(rng.integers(10, 17)),
                             minute=int(rng.integers(0, 60)),

@@ -136,8 +136,8 @@ def create_persona(
     sim = RealTimeSimulator(db)
     vault = VaultManager(db, db)
 
-    user_hash = vault.store_identity(request.email)
-    events = sim.create_persona(request.persona_type, user_hash)
+    user_hash = vault.store_identity(request.email, tenant_id=member.tenant_id)
+    events = sim.create_persona(request.persona_type, user_hash, tenant_id=member.tenant_id)
 
     for event in events:
         db.add(event)

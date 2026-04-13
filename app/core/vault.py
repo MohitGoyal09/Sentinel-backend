@@ -10,13 +10,13 @@ class VaultManager:
         self.a_db = analytics_db
         self.i_db = identity_db
     
-    def store_identity(self, email: str) -> str:
+    def store_identity(self, email: str, tenant_id=None) -> str:
         """
         Vault B: Store encrypted identity mapping
         Returns: user_hash for Vault A usage
         """
         user_hash = privacy.hash_identity(email)
-        
+
         # Check if exists in Vault B
         existing = self.i_db.query(UserIdentity).filter_by(user_hash=user_hash).first()
         if not existing:
@@ -24,10 +24,11 @@ class VaultManager:
                 user_hash=user_hash,
                 email_encrypted=privacy.encrypt(email),
                 # slack_id_encrypted defaults to None initially
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
+                tenant_id=tenant_id,
             )
             self.i_db.add(identity)
-            self.i_db.commit()
+            self.i_db.flush()
         
         return user_hash
     
