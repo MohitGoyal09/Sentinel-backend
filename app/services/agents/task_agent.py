@@ -474,6 +474,22 @@ class TaskAgent:
                                                         }
                                                     )
 
+                            # 6b. Fallback: Gemini 2.5+ with AFC may put the final
+                            # text response in the resolved response object rather
+                            # than streaming it as candidates chunks.
+                            if not accumulated_text:
+                                try:
+                                    resolved = response_stream.resolve()
+                                    if resolved and resolved.candidates:
+                                        for cand in resolved.candidates:
+                                            if cand.content and cand.content.parts:
+                                                for p in cand.content.parts:
+                                                    if hasattr(p, "text") and p.text:
+                                                        accumulated_text += p.text
+                                                        yield _sse({"type": "token", "content": p.text})
+                                except Exception as resolve_exc:
+                                    logger.debug("Could not resolve final response: %s", resolve_exc)
+
                             # 7. Post-stream: if the LLM mentioned needing auth
                             # but no connection_link event was emitted, proactively
                             # fetch an OAuth URL and emit the card.
