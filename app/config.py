@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     portkey_api_key: str = ""
     portkey_virtual_key: str = ""           # Primary model virtual key (set in Portkey dashboard)
     portkey_fallback_virtual_key: str = ""  # Fallback model virtual key (optional)
-    llm_model: str = "gemini-2.0-flash"
-    llm_fallback_model: str = "gemini-1.5-flash"
+    llm_model: str = "gemini-2.5-flash"
+    llm_fallback_model: str = "gemini-2.0-flash-lite"
 
     # Direct LLM API keys (fallback when Portkey virtual keys are not configured)
     llm_api_key: str = ""          # Groq API key for direct calls
