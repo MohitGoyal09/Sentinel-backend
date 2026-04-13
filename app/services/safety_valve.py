@@ -395,7 +395,7 @@ class SafetyValve:
         for day_offset, (
             velocity, belongingness, risk_level, confidence, attrition_prob
         ) in enumerate(data_points):
-            timestamp = base + timedelta(days=day_offset, hours=rng.integers(9, 18))
+            timestamp = base + timedelta(days=day_offset, hours=int(rng.integers(9, 18)))
             entry = RiskHistory(
                 user_hash=user_hash,
                 tenant_id=self.tenant_id,
