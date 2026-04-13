@@ -246,7 +246,7 @@ class MCPToolRouter:
         session = composio.tool_router.create(
             user_id=user_id,
             connected_accounts=connected_map if connected_map else None,
-            toolkits={"disable": ["MEM0", "EXECUTE_CODE", "REMOTE_WORKBENCH", "CODE_ANALYSIS"]},
+            toolkits={"disable": ["MEM0"]},
         )
         return session.mcp.url, session.mcp.headers
 
