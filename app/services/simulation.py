@@ -229,7 +229,7 @@ class RealTimeSimulator:
                 )
 
                 team = config.get("team", "backend")
-                target = rng.choice(TEAM_MEMBERS.get(team, TEAM_MEMBERS["backend"])) if is_reply else None
+                target = str(rng.choice(TEAM_MEMBERS.get(team, TEAM_MEMBERS["backend"]))) if is_reply else None
 
                 events.append(Event(
                     user_hash=user_hash,
@@ -301,9 +301,9 @@ class RealTimeSimulator:
                         metadata_={
                             "after_hours": False,
                             "time_to_unblock_min": int(rng.exponential(15)),
-                            "knowledge_area": rng.choice([
+                            "knowledge_area": str(rng.choice([
                                 "API design", "database", "auth", "frontend", "testing"
-                            ]),
+                            ])),
                         },
                     ))
 
@@ -322,7 +322,7 @@ class RealTimeSimulator:
         event_type = str(self.rng.choice(["commit", "slack_message", "pr_review"]))
 
         metadata: Dict = {
-            "after_hours": hour > 19,
+            "after_hours": bool(hour > 19),
             "context_switches": int(self.rng.poisson(2 + burnout * 8)),
             "burnout_phase": _burnout_phase(burnout),
         }
