@@ -1,4 +1,5 @@
 import logging
+import math
 import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta, timezone
@@ -153,6 +154,27 @@ class SafetyValve:
         # Velocity only on unexplained late nights
         velocity, r_squared = self._calculate_velocity(unexplained_events)
 
+        # Multi-source confidence: more data sources = higher confidence
+        sources: set[str] = set()
+        for e in events:
+            if isinstance(e.metadata_, dict):
+                src = e.metadata_.get("source", "unknown")
+                if src and src != "unknown":
+                    sources.add(src)
+            # Also infer source from event_type
+            if e.event_type in ("commit", "pr_review", "pr_created", "code_review"):
+                sources.add("github")
+            elif e.event_type in ("slack_message",):
+                sources.add("slack")
+            elif e.event_type in ("meeting",):
+                sources.add("calendar")
+            elif e.event_type in ("email_sent",):
+                sources.add("email")
+
+        source_count = max(len(sources), 1)
+        source_multiplier = min(source_count / 3.0, 1.0)  # 1 source=0.33, 2=0.67, 3+=1.0
+        confidence = round(r_squared * source_multiplier, 3)
+
         # Belongingness on ALL events
         belongingness = self._calculate_belongingness(user_hash, events)
 
@@ -179,10 +201,12 @@ class SafetyValve:
             "engine": "Safety Valve",
             "risk_level": risk,
             "velocity": round(float(velocity), 2),
-            "confidence": round(float(r_squared), 2),
+            "confidence": confidence,
             "belongingness_score": round(float(belongingness), 2),
             "circadian_entropy": round(float(entropy), 2),
             "attrition_probability": attrition_prob,
+            "sources_used": list(sources),
+            "source_count": source_count,
             "explained_events_filtered": explained_count,
             "unexplained_events_count": len(unexplained_events),
             "indicators": {
@@ -267,12 +291,24 @@ class SafetyValve:
         daily_scores = {}
         for e in events:
             day = e.timestamp.date()
-            score = 1.0
-            if e.metadata_ and isinstance(e.metadata_, dict):
-                if e.metadata_.get("after_hours"):
-                    score += 2.0
-                if e.metadata_.get("context_switches", 0) > 5:
-                    score += 0.5
+            metadata = e.metadata_ if e.metadata_ and isinstance(e.metadata_, dict) else {}
+
+            # Weight by code complexity (files_changed * log1p(additions + deletions))
+            files = metadata.get("files_changed", 1) if isinstance(metadata, dict) else 1
+            additions = metadata.get("additions", 0) if isinstance(metadata, dict) else 0
+            deletions = metadata.get("deletions", 0) if isinstance(metadata, dict) else 0
+            changes = additions + deletions
+
+            if files > 0 and changes > 0:
+                weight = min(files * math.log1p(changes), 5.0)  # cap at 5.0
+                score = max(0.5, weight)  # minimum 0.5 so events always count
+            else:
+                score = 1.0  # default for non-code events (slack, meetings)
+
+            if metadata.get("after_hours"):
+                score += 2.0
+            if metadata.get("context_switches", 0) > 5:
+                score += 0.5
             daily_scores[day] = daily_scores.get(day, 0) + score
 
         if len(daily_scores) < 2:
