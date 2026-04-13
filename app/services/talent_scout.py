@@ -113,6 +113,21 @@ class TalentScout:
             )
 
         # Build response nodes/edges
+        # Resolve real names from TenantMember
+        name_lookup = {}
+        members: list = []
+        try:
+            members = self.db.query(TenantMember).filter(
+                TenantMember.user_hash.in_(list(G.nodes()))
+            ).all()
+            name_lookup = {
+                m.user_hash: m.display_name
+                for m in members
+                if m.display_name
+            }
+        except Exception:
+            pass
+
         graph_nodes = []
 
         for node in G.nodes():
@@ -126,7 +141,8 @@ class TalentScout:
             graph_nodes.append(
                 {
                     "id": node,
-                    "label": f"User_{node[:4]}",
+                    "label": name_lookup.get(node, f"User_{node[:4]}"),
+                    "role": next((m.role for m in members if m.user_hash == node), "employee"),
                     "risk_level": "LOW",
                     "betweenness": round(bw, 3),
                     "eigenvector": round(ev, 3),
