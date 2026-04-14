@@ -816,6 +816,76 @@ def _generate_audit_logs(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Shadow Deployment Validation Data
+# ═══════════════════════════════════════════════════════════════════════════
+
+SHADOW_DEPARTURES = [
+    {
+        "email": "dev1@acme.com",       # Jordan Lee — CRITICAL, correctly predicted
+        "departure_date": "2026-04-10",
+        "reason": "voluntary",
+        "predicted_risk": "CRITICAL",
+        "predicted_attrition_probability": 0.85,
+        "correctly_predicted": True,
+        "days_ago": 4,
+    },
+    {
+        "email": "dev2@acme.com",       # Maria Santos — CRITICAL, correctly predicted
+        "departure_date": "2026-04-12",
+        "reason": "voluntary",
+        "predicted_risk": "CRITICAL",
+        "predicted_attrition_probability": 0.78,
+        "correctly_predicted": True,
+        "days_ago": 2,
+    },
+    {
+        "email": "admin@acme.com",      # Sarah Chen — LOW, false negative (honest miss)
+        "departure_date": "2026-04-08",
+        "reason": "voluntary",
+        "predicted_risk": "LOW",
+        "predicted_attrition_probability": 0.08,
+        "correctly_predicted": False,
+        "days_ago": 6,
+    },
+]
+
+
+def seed_shadow_departures(
+    db,
+    tenant_id,
+    user_hashes: dict,
+    now: datetime,
+) -> list:
+    """Create shadow departure audit log entries for demo validation.
+
+    Produces 3 departures: 2 correctly predicted (Jordan, Maria),
+    1 false negative (Sarah). Accuracy: 66.7% — honest, not perfect.
+    """
+    entries = []
+    admin_hash = user_hashes["admin@acme.com"]
+
+    for dep in SHADOW_DEPARTURES:
+        target_hash = user_hashes[dep["email"]]
+        entries.append(AuditLog(
+            tenant_id=tenant_id,
+            actor_hash=admin_hash,
+            actor_role="admin",
+            user_hash=target_hash,
+            action="shadow_departure_logged",
+            details={
+                "departure_date": dep["departure_date"],
+                "reason": dep["reason"],
+                "predicted_risk": dep["predicted_risk"],
+                "predicted_attrition_probability": dep["predicted_attrition_probability"],
+                "correctly_predicted": dep["correctly_predicted"],
+            },
+            timestamp=now - timedelta(days=dep["days_ago"]),
+        ))
+
+    return entries
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Chat Session Seeds
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1030,7 +1100,7 @@ def seed():
         _clear_supabase_users()
 
         # -- Step 1: Create Tenant ---------------------------------
-        log.info("\n[1/9] Creating tenant...")
+        log.info("\n[1/10] Creating tenant...")
         tenant = Tenant(
             name=ORG_NAME,
             slug=ORG_SLUG,
@@ -1046,7 +1116,7 @@ def seed():
         log.info(f"    Tenant: {ORG_NAME} ({tenant.id})")
 
         # -- Step 2: Create Teams ----------------------------------
-        log.info("\n[2/9] Creating teams...")
+        log.info("\n[2/10] Creating teams...")
         team_map = {}
         for t in TEAMS:
             manager_hash = privacy.hash_identity(t["manager_email"])
@@ -1061,7 +1131,7 @@ def seed():
             log.info(f"    Team: {t['name']} (manager: {t['manager_email']})")
 
         # -- Step 3: Create Users + TenantMembers ------------------
-        log.info("\n[3/9] Creating users and memberships...")
+        log.info("\n[3/10] Creating users and memberships...")
         user_hashes = {}
 
         for u in DEMO_USERS:
@@ -1097,7 +1167,7 @@ def seed():
         db.flush()
 
         # -- Step 4: Risk Scores + Trending History ----------------
-        log.info("\n[4/9] Creating risk scores and trending history...")
+        log.info("\n[4/10] Creating risk scores and trending history...")
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
             profile = RISK_PROFILES[u["email"]]
@@ -1135,7 +1205,7 @@ def seed():
         log.info(f"    {len(DEMO_USERS)} risk scores + {len(DEMO_USERS) * 30} history entries")
 
         # -- Step 5: Deterministic Skill Profiles + Centrality -----
-        log.info("\n[5/9] Creating skill profiles and network scores...")
+        log.info("\n[5/10] Creating skill profiles and network scores...")
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
             sp = SKILL_PROFILES[u["email"]]
@@ -1165,7 +1235,7 @@ def seed():
         log.info(f"    {len(DEMO_USERS)} skill profiles + {len(DEMO_USERS)} centrality scores")
 
         # -- Step 6: Persona-Driven Events + Graph Edges -----------
-        log.info("\n[6/9] Creating persona-driven events and graph edges...")
+        log.info("\n[6/10] Creating persona-driven events and graph edges...")
         all_hashes = list(user_hashes.values())
         event_count = 0
 
@@ -1186,7 +1256,7 @@ def seed():
         log.info(f"    {event_count} events + {len(edges)} graph edges")
 
         # -- Step 7: Notifications ---------------------------------
-        log.info("\n[7/9] Creating notifications...")
+        log.info("\n[7/10] Creating notifications...")
         notif_count = 0
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
@@ -1216,14 +1286,26 @@ def seed():
         log.info(f"    {notif_count} notifications + {len(DEMO_USERS) * 10} preferences")
 
         # -- Step 8: Rich Audit Log Timeline -----------------------
-        log.info("\n[8/9] Creating rich audit log timeline...")
+        log.info("\n[8/10] Creating rich audit log timeline...")
         audit_entries = _generate_audit_logs(user_hashes, tenant.id, now)
         for entry in audit_entries:
             db.add(entry)
         log.info(f"    {len(audit_entries)} audit log entries")
 
-        # -- Step 9: Seed Chat Sessions ----------------------------
-        log.info("\n[9/9] Creating pre-seeded chat sessions...")
+        # -- Step 9: Shadow Deployment Validation ------------------
+        log.info("\n[9/10] Creating shadow deployment validation data...")
+        shadow_entries = seed_shadow_departures(db, tenant.id, user_hashes, now)
+        for entry in shadow_entries:
+            db.add(entry)
+        shadow_correct = sum(1 for e in shadow_entries if e.details.get("correctly_predicted"))
+        log.info(
+            f"    {len(shadow_entries)} shadow departures "
+            f"({shadow_correct} correct, {len(shadow_entries) - shadow_correct} false negative, "
+            f"accuracy {shadow_correct / max(len(shadow_entries), 1) * 100:.1f}%)"
+        )
+
+        # -- Step 10: Seed Chat Sessions ---------------------------
+        log.info("\n[10/10] Creating pre-seeded chat sessions...")
         sessions, history = _generate_chat_sessions(user_hashes, tenant.id, now)
         for s in sessions:
             db.add(s)
@@ -1242,6 +1324,7 @@ def seed():
         log.info(f"  Events: {event_count}")
         log.info(f"  Graph Edges: {len(edges)}")
         log.info(f"  Audit Logs: {len(audit_entries)}")
+        log.info(f"  Shadow Departures: {len(shadow_entries)} (accuracy {shadow_correct / max(len(shadow_entries), 1) * 100:.1f}%)")
         log.info(f"  Chat Sessions: {len(sessions)}")
         log.info("=" * 60)
         log.info("\n  Demo Credentials (all use password: Demo123!)")

@@ -5,6 +5,8 @@ from app.services.slack import slack_service
 from app.services.context import ContextEnricher
 from app.core.security import privacy
 from app.models.identity import UserIdentity, AuditLog
+from app.models.notification import Notification
+from app.models.tenant import TenantMember
 from app.services.websocket_manager import manager
 from typing import Optional
 
@@ -56,22 +58,55 @@ class NudgeDispatcher:
         
         # Send via Slack
         sent = await slack_service.send_nudge(email, message, risk_level)
-        
+
         if sent:
             # Audit log in Vault B
             self._audit_log(user_hash, risk_level, message, context_check)
-            
+
             # WebSocket notify frontend
             await manager.broadcast_risk_update(user_hash, {
                 **risk_data,
                 "nudge_sent": True,
                 "nudge_message": message[:100]  # Preview only
             })
-            
-            return True
-        
-        return False
+
+        # Create in-app notification regardless of Slack outcome
+        # Look up tenant_id from the user's TenantMember record
+        tenant_member = self.db.query(TenantMember).filter_by(user_hash=user_hash).first()
+        tenant_id = tenant_member.tenant_id if tenant_member else None
+        self._create_in_app_notification(user_hash, risk_level, tenant_id=tenant_id)
+
+        return sent or False
     
+    def _create_in_app_notification(self, user_hash: str, risk_level: str, tenant_id=None) -> None:
+        """Create an in-app Notification record for the employee based on risk level."""
+        if risk_level == "CRITICAL":
+            title = "Wellness Check"
+            message = (
+                "Your work patterns show signs of elevated stress. "
+                "Consider discussing with your manager or taking a break."
+            )
+            priority = "critical"
+        else:
+            title = "Pattern Change Detected"
+            message = (
+                "We noticed changes in your work patterns. "
+                "This is just a heads-up."
+            )
+            priority = "high"
+
+        notification = Notification(
+            user_hash=user_hash,
+            tenant_id=tenant_id,
+            type="activity",
+            title=title,
+            message=message,
+            priority=priority,
+            action_url="/ask-sentinel",
+        )
+        self.db.add(notification)
+        self.db.commit()
+
     def _generate_message(self, risk_data: dict, context: dict) -> str:
         """Generate empathetic, non-surveillance language"""
         velocity = risk_data.get("velocity", 0)

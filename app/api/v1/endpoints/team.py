@@ -676,11 +676,22 @@ def send_wellness_nudge(
     db.add(audit_log)
     db.commit()
 
-    # In real implementation, this would send via Slack/email
-    # For now, we just log it
+    # Create an in-app notification for the target employee
+    from app.models.notification import Notification
+    notification = Notification(
+        user_hash=user_hash,
+        tenant_id=current_user.tenant_id,
+        type="activity",
+        title="Manager Nudge",
+        message=message if message else "Your manager sent you a check-in nudge.",
+        priority="normal",
+        data={"sender_hash": current_user.user_hash},
+    )
+    db.add(notification)
+    db.commit()
 
     return {
-        "message": "Nudge recorded (sending not implemented in demo)",
+        "message": "Nudge sent successfully",
         "recipient": user_hash,
         "sender": current_user.user_hash,
         "logged": True,

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.api.deps.auth import get_tenant_member
 from app.core.database import get_db
 from app.models.tenant import TenantMember
+from app.models.notification import Notification
 from app.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger("sentinel.api.workflows")
@@ -354,6 +355,18 @@ async def execute_workflow(
             "trigger": wf["trigger"],
         },
     )
+
+    # Create an in-app notification so the execution is visible
+    notification = Notification(
+        user_hash=member.user_hash,
+        tenant_id=member.tenant_id,
+        type="activity",
+        title=f"Workflow executed: {wf['name']}",
+        message=f"Your workflow \"{wf['name']}\" was executed successfully.",
+        priority="normal",
+        data={"workflow_id": workflow_id},
+    )
+    db.add(notification)
     db.commit()
 
     logger.info(f"Workflow executed: id={workflow_id} owner={owner}")

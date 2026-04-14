@@ -220,6 +220,7 @@ def update_user_role(
     db.add(
         Notification(
             user_hash=user_hash,
+            tenant_id=member.tenant_id,
             type="team",
             title="Role Updated",
             message=f"Your role has been changed to {new_role}.",

@@ -1376,6 +1376,7 @@ async def chat(
 async def submit_chat_feedback(
     body: dict,
     current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
 ):
     """
     Record user feedback on an AI response.
@@ -1405,6 +1406,20 @@ async def submit_chat_feedback(
         rating,
         current_user.user_hash,
     )
+
+    # Persist feedback to audit log for offline analysis
+    from app.models.identity import AuditLog
+    audit_entry = AuditLog(
+        user_hash=current_user.user_hash,
+        action="chat_feedback",
+        details={
+            "conversation_id": conversation_id,
+            "message_index": message_index,
+            "rating": rating,
+        },
+    )
+    db.add(audit_entry)
+    db.commit()
 
     return {"status": "ok", "message": "Feedback recorded"}
 

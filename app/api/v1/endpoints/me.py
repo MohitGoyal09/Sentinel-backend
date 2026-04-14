@@ -10,18 +10,19 @@ These endpoints allow employees to:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, List
 from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.identity import UserIdentity, AuditLog
-from app.models.analytics import RiskScore, RiskHistory, SkillProfile, GraphEdge, CentralityScore
+from app.models.analytics import Event, RiskScore, RiskHistory, SkillProfile, GraphEdge, CentralityScore
 from app.models.chat_history import ChatHistory, ChatSession
 from app.models.notification import Notification, NotificationPreference
 from app.models.tenant import TenantMember
 from app.api.deps.auth import get_current_user_identity, require_role
 from app.services.permission_service import PermissionService, UserRole
+from app.services.safety_valve import SafetyValve
 from app.schemas.engines import SafetyValveResponse
 
 router = APIRouter()
@@ -30,6 +31,17 @@ router = APIRouter()
 class ConsentUpdate(BaseModel):
     consent_share_with_manager: Optional[bool] = None
     consent_share_anonymized: Optional[bool] = None
+
+
+class ContextExplanation(BaseModel):
+    explanation_type: str  # "working_by_choice", "deadline", "timezone", "other"
+    message: str  # Free text explanation
+    date_range_start: Optional[str] = None  # ISO date
+    date_range_end: Optional[str] = None  # ISO date
+
+
+class RiskAppeal(BaseModel):
+    reason: str  # Why the score is wrong
 
 
 @router.get("", response_model=dict)
@@ -434,6 +446,177 @@ def get_my_audit_trail(
             }
             for log in logs
         ],
+    }
+
+
+@router.post("/provide-context")
+def provide_context(
+    body: ContextExplanation,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Allow an employee to provide context for flagged behavior.
+
+    Use cases:
+    - "I was working late by choice"
+    - "We had a deadline sprint"
+    - "I'm in a different timezone"
+    - General explanation
+
+    This marks recent events in the date range as "explained" and
+    re-runs SafetyValve analysis to recalculate with the new context.
+    """
+    valid_types = {"working_by_choice", "deadline", "timezone", "other"}
+    if body.explanation_type not in valid_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"explanation_type must be one of: {', '.join(sorted(valid_types))}",
+        )
+
+    if not body.message or len(body.message.strip()) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a meaningful explanation (at least 3 characters).",
+        )
+
+    user_hash = current_user.user_hash
+
+    # Determine date range for marking events
+    now = datetime.now(timezone.utc)
+    try:
+        range_start = (
+            datetime.fromisoformat(body.date_range_start).replace(tzinfo=timezone.utc)
+            if body.date_range_start
+            else now - timedelta(days=7)
+        )
+        range_end = (
+            datetime.fromisoformat(body.date_range_end).replace(tzinfo=timezone.utc)
+            if body.date_range_end
+            else now
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Use ISO 8601 (e.g. 2026-04-10).",
+        )
+
+    # Log the explanation to audit trail
+    audit_log = AuditLog(
+        user_hash=user_hash,
+        action="employee_context_provided",
+        details={
+            "explanation_type": body.explanation_type,
+            "message": body.message,
+            "date_range_start": range_start.isoformat(),
+            "date_range_end": range_end.isoformat(),
+            "provided_by": "self",
+        },
+    )
+    db.add(audit_log)
+
+    # Mark events in the date range as "explained"
+    events = (
+        db.query(Event)
+        .filter(
+            Event.user_hash == user_hash,
+            Event.timestamp >= range_start,
+            Event.timestamp <= range_end,
+        )
+        .all()
+    )
+
+    events_marked = 0
+    for event in events:
+        if not event.metadata_:
+            event.metadata_ = {}
+        event.metadata_ = {
+            **event.metadata_,
+            "explained": True,
+            "explanation_type": body.explanation_type,
+            "employee_explanation": body.message[:200],
+        }
+        db.merge(event)
+        events_marked += 1
+
+    db.commit()
+
+    # Re-run SafetyValve analysis with the newly explained events
+    # Get tenant_id from TenantMember for scoped analysis
+    member = db.query(TenantMember).filter_by(user_hash=user_hash).first()
+    tenant_id = member.tenant_id if member else None
+
+    valve = SafetyValve(db, tenant_id=tenant_id)
+
+    # Clear cached RiskScore so analyze() recalculates from events
+    existing_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+    if existing_score:
+        existing_score.velocity = None
+        db.commit()
+
+    result = valve.analyze(user_hash)
+
+    return {
+        "message": "Context recorded successfully. Risk assessment updated.",
+        "events_marked_explained": events_marked,
+        "explanation_type": body.explanation_type,
+        "updated_risk": {
+            "risk_level": result.get("risk_level", "LOW"),
+            "velocity": result.get("velocity", 0.0),
+            "confidence": result.get("confidence", 0.0),
+            "belongingness_score": result.get("belongingness_score", 0.0),
+        },
+    }
+
+
+@router.post("/appeal-risk")
+def appeal_risk(
+    body: RiskAppeal,
+    current_user: UserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit an appeal against the current risk score.
+
+    This logs the appeal and lowers confidence by 20% to reflect
+    the uncertainty introduced by employee disagreement.
+    """
+    if not body.reason or len(body.reason.strip()) < 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a detailed reason (at least 10 characters).",
+        )
+
+    user_hash = current_user.user_hash
+
+    # Log the appeal to audit trail
+    audit_log = AuditLog(
+        user_hash=user_hash,
+        action="risk_appeal_submitted",
+        details={
+            "reason": body.reason,
+            "submitted_by": "self",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    db.add(audit_log)
+
+    # Lower confidence by 20% on the existing RiskScore
+    risk_score = db.query(RiskScore).filter_by(user_hash=user_hash).first()
+    original_confidence = 0.0
+    if risk_score and risk_score.confidence is not None:
+        original_confidence = float(risk_score.confidence)
+        risk_score.confidence = round(max(0.0, original_confidence * 0.8), 3)
+        risk_score.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+
+    return {
+        "message": "Appeal submitted. Your feedback has been recorded and model confidence adjusted.",
+        "appeal_logged": True,
+        "confidence_before": round(original_confidence, 3),
+        "confidence_after": round(risk_score.confidence, 3) if risk_score else 0.0,
+        "risk_level": risk_score.risk_level if risk_score else "LOW",
     }
 
 

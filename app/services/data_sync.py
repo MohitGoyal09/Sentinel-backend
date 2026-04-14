@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.composio_client import composio_client
 from app.services.connectors.git_connector import GitConnector
+from app.services.connectors.gmail_connector import GmailConnector
 from app.services.connectors.slack_connector import SlackConnector
 from app.core.security import privacy
 from app.models.analytics import Event, GraphEdge
@@ -391,6 +392,109 @@ class DataSyncService:
 
         return {"success": True, "source": "calendar", "ingested": ingested, "errors": errors}
 
+    async def sync_gmail(self, entity_id: str, user_hash: str,
+                         tenant_id: Optional[str] = None, days: int = 7) -> dict:
+        """Pull Gmail sent email metadata via Composio and store as Events."""
+        if not composio_client.is_available():
+            return {"success": False, "error": "Composio not configured", "ingested": 0}
+
+        ingested = 0
+        errors = 0
+
+        try:
+            after_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y/%m/%d")
+            result = await composio_client.execute_tool(
+                "gmail", "list_messages",
+                {"q": f"from:me after:{after_date}", "maxResults": self._max_events_per_call},
+                entity_id
+            )
+
+            if not result.get("success"):
+                return {"success": False, "error": "Gmail fetch failed", "ingested": 0}
+
+            messages = []
+            result_data = result.get("result", {})
+            if isinstance(result_data, dict):
+                data = result_data.get("data", result_data)
+                if isinstance(data, dict):
+                    messages = data.get("messages", [])
+                elif isinstance(data, list):
+                    messages = data
+            elif isinstance(result_data, list):
+                messages = result_data
+
+            for msg in messages:
+                try:
+                    headers = {}
+                    payload = msg.get("payload", {})
+                    for h in payload.get("headers", []):
+                        headers[h.get("name", "").lower()] = h.get("value", "")
+
+                    # Parse timestamp from internalDate (ms since epoch)
+                    internal_date = msg.get("internalDate")
+                    if internal_date:
+                        event_time = datetime.fromtimestamp(
+                            int(internal_date) / 1000, tz=timezone.utc
+                        )
+                    else:
+                        event_time = datetime.now(timezone.utc)
+
+                    # Count recipients from To + Cc (metadata only, not names)
+                    to_field = headers.get("to", "")
+                    cc_field = headers.get("cc", "")
+                    recipient_count = len([r for r in (to_field + "," + cc_field).split(",") if r.strip()])
+
+                    # Detect reply from In-Reply-To or References headers
+                    is_reply = bool(headers.get("in-reply-to") or headers.get("references"))
+
+                    hour = event_time.hour
+                    after_hours = hour >= 18 or hour < 8
+                    message_id = msg.get("id", "")
+
+                    # Dedup
+                    if message_id:
+                        existing = self.db.query(Event).filter(
+                            Event.user_hash == user_hash,
+                            Event.event_type == "email_sent",
+                        ).filter(
+                            Event.metadata_["source_id"].astext == message_id
+                        ).first()
+                        if existing:
+                            continue
+
+                    email_data = {
+                        "user_email": "self",
+                        "timestamp": event_time.isoformat(),
+                        "recipient_count": recipient_count,
+                        "is_reply": is_reply,
+                        "message_id": message_id,
+                    }
+                    normalized = GmailConnector.parse_email(email_data)
+
+                    event = Event(
+                        user_hash=user_hash,
+                        tenant_id=tenant_id,
+                        timestamp=normalized.timestamp,
+                        event_type=normalized.event_type,
+                        metadata_=normalized.metadata,
+                    )
+                    self.db.add(event)
+                    ingested += 1
+
+                except Exception as e:
+                    logger.debug("Failed to parse Gmail message: %s", e)
+                    errors += 1
+
+            if ingested > 0:
+                self.db.commit()
+
+        except Exception as e:
+            logger.error("sync_gmail failed: %s", e)
+            self.db.rollback()
+            return {"success": False, "error": str(e), "ingested": ingested, "errors": errors}
+
+        return {"success": True, "source": "gmail", "ingested": ingested, "errors": errors}
+
     async def sync_all_connected(self, entity_id: str, user_hash: str,
                                   tenant_id: Optional[str] = None) -> dict:
         """Sync all connected tools for a user."""
@@ -404,6 +508,8 @@ class DataSyncService:
             results["slack"] = await self.sync_slack(entity_id, user_hash, tenant_id)
         if "googlecalendar" in connected_lower or "google_calendar" in connected_lower:
             results["calendar"] = await self.sync_calendar(entity_id, user_hash, tenant_id)
+        if "gmail" in connected_lower or "google_mail" in connected_lower:
+            results["gmail"] = await self.sync_gmail(entity_id, user_hash, tenant_id)
 
         total_ingested = sum(r.get("ingested", 0) for r in results.values())
         return {
@@ -429,6 +535,9 @@ def background_sync(entity_id: str, user_hash: str, tenant_id: str, source: str 
             elif source == "calendar":
                 result = asyncio.run(service.sync_calendar(entity_id, user_hash, tenant_id))
                 results = {"calendar": result}
+            elif source == "gmail":
+                result = asyncio.run(service.sync_gmail(entity_id, user_hash, tenant_id))
+                results = {"gmail": result}
             else:
                 full = asyncio.run(service.sync_all_connected(entity_id, user_hash, tenant_id))
                 results = full.get("sources", {})

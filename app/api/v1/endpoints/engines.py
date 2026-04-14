@@ -525,31 +525,87 @@ def schedule_break(
     current_user: UserIdentity = Depends(get_current_user_identity),
     member: TenantMember = Depends(get_tenant_member),
 ):
-    """Schedule a break for a user (logs the action)"""
+    """Schedule a 1:1 check-in for a user and return a Google Calendar link."""
     # RBAC Check: Verify user has permission to access this data
     check_user_data_access(db, member, user_hash)
 
     from app.models.identity import AuditLog
-    from datetime import datetime, timedelta
+    from app.models.notification import Notification
+    from urllib.parse import quote
 
-    break_time = datetime.utcnow() + timedelta(days=1)
+    # Look up employee name for the calendar event title
+    target_member = (
+        db.query(TenantMember)
+        .filter(TenantMember.user_hash == user_hash, TenantMember.tenant_id == member.tenant_id)
+        .first()
+    )
+    employee_name = target_member.display_name if target_member and target_member.display_name else user_hash[:8]
 
+    # Schedule for tomorrow 10:00-10:30 AM UTC
+    now = datetime.utcnow()
+    tomorrow = now + timedelta(days=1)
+    start_time = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
+    end_time = start_time + timedelta(minutes=30)
+
+    # Format dates for Google Calendar: YYYYMMDDTHHmmSSZ
+    start_str = start_time.strftime("%Y%m%dT%H%M%SZ")
+    end_str = end_time.strftime("%Y%m%dT%H%M%SZ")
+
+    event_title = f"1:1 Check-in: {employee_name}"
+    event_details = (
+        f"Scheduled via Sentinel.\n\n"
+        f"Employee: {employee_name}\n"
+        f"Scheduled by: {member.user_hash[:8]}\n\n"
+        f"Talking points:\n"
+        f"- How are you feeling about your current workload?\n"
+        f"- Is there anything blocking your progress?\n"
+        f"- How can I better support you?"
+    )
+
+    calendar_link = (
+        f"https://calendar.google.com/calendar/render"
+        f"?action=TEMPLATE"
+        f"&text={quote(event_title)}"
+        f"&dates={start_str}/{end_str}"
+        f"&details={quote(event_details)}"
+    )
+
+    # Audit log
     log = AuditLog(
         user_hash=user_hash,
         action="break_scheduled",
         details={
             "scheduled_by": member.user_hash,
-            "scheduled_for": break_time.isoformat(),
-            "timestamp": datetime.utcnow().isoformat(),
+            "scheduled_for": start_time.isoformat(),
+            "calendar_link": calendar_link,
+            "timestamp": now.isoformat(),
         },
     )
     db.add(log)
+
+    # Create in-app notification for the employee
+    notification = Notification(
+        user_hash=user_hash,
+        tenant_id=member.tenant_id,
+        type="team",
+        title="1:1 Check-in Scheduled",
+        message=f"A 1:1 check-in has been scheduled for {start_time.strftime('%B %d at %I:%M %p')} UTC.",
+        priority="normal",
+        action_url=calendar_link,
+        data={
+            "scheduled_by": member.user_hash,
+            "scheduled_for": start_time.isoformat(),
+        },
+    )
+    db.add(notification)
+
     db.commit()
 
     return {
         "success": True,
-        "message": "Break scheduled",
-        "scheduled_time": break_time.isoformat(),
+        "message": "1:1 check-in scheduled",
+        "scheduled_time": start_time.isoformat(),
+        "calendar_link": calendar_link,
     }
 
 

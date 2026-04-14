@@ -10,6 +10,7 @@ from app.models.analytics import Event, RiskScore
 from app.services.context import ContextEnricher
 from app.services.nudge_dispatcher import NudgeDispatcher
 from app.services.websocket_manager import manager
+from app.models.notification import Notification
 
 from typing import Optional
 from uuid import UUID
@@ -224,6 +225,9 @@ class SafetyValve:
 
         result = self.analyze(user_hash)
 
+        # NOTE: In-app notification is created by NudgeDispatcher._create_in_app_notification()
+        # after the full pipeline (context check, Slack, etc.). Do not duplicate it here.
+
         # If elevated or critical, dispatch nudge via Slack (async in background)
         if result["risk_level"] in ["ELEVATED", "CRITICAL"]:
             try:
@@ -334,7 +338,7 @@ class SafetyValve:
     def _calculate_belongingness(self, user_hash: str, events: List[Event]) -> float:
         """Measure social connection"""
         interactions = [
-            e for e in events if e.event_type in ["slack_message", "pr_comment", "pr_review"]
+            e for e in events if e.event_type in ["slack_message", "pr_comment", "pr_review", "email_sent"]
         ]
         if not interactions:
             return 0.5
