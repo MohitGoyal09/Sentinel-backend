@@ -442,12 +442,12 @@ async def sync_connected_tools(
 ):
     """Manually trigger data sync for connected tools."""
     from app.services.data_sync import background_sync
-    from app.api.v1.endpoints.connections import _get_entity_id as get_eid
-    from app.config import get_settings
 
-    # Build entity_id from user's email
+    # require_role returns a TenantMember which lacks email_encrypted.
+    # Look up the UserIdentity via user_hash to build the Composio entity_id.
     settings = get_settings()
-    email = privacy.decrypt(user.email_encrypted) if hasattr(user, 'email_encrypted') else ""
+    identity = db.query(UserIdentity).filter_by(user_hash=user.user_hash).first()
+    email = privacy.decrypt(identity.email_encrypted) if identity and identity.email_encrypted else ""
     entity_id = f"{email}-{settings.environment}" if email else ""
 
     if not entity_id:
