@@ -38,9 +38,18 @@ class SafetyValveData(BaseModel):
     confidence: float
     belongingness_score: float
     circadian_entropy: float
+    attrition_probability: Optional[float] = 0.0
+    sentiment_score: Optional[float] = None
+    sentiment_available: Optional[bool] = False
     indicators: Dict[str, bool]
     status: Optional[str] = "ACTIVE"
     days_collected: Optional[int] = 0
+    events_analyzed: Optional[int] = None
+    analysis_window_days: Optional[int] = None
+    sources_used: Optional[List[str]] = None
+    source_count: Optional[int] = None
+    explained_events_filtered: Optional[int] = None
+    unexplained_events_count: Optional[int] = None
 
 
 class TalentScoutPerformer(BaseModel):
@@ -140,6 +149,8 @@ class UserSummary(BaseModel):
     velocity: Optional[float] = None
     confidence: Optional[float] = None
     updated_at: Optional[str] = None
+    sentiment_score: Optional[float] = None
+    sentiment_available: Optional[bool] = False
 
 
 class UserListResponse(APIResponse):

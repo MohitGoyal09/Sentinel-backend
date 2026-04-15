@@ -808,6 +808,52 @@ def list_users(
     return UserListResponse(success=True, data=result)
 
 
+# ============ SENTIMENT HISTORY ============
+
+
+@router.get("/users/{user_hash}/sentiment-history")
+def get_sentiment_history(
+    user_hash: str,
+    days: int = Query(default=21, ge=1, le=90),
+    db: Session = Depends(get_db),
+    member: TenantMember = Depends(require_role("manager", "admin")),
+):
+    """Get daily sentiment scores aggregated from slack_sentiment events"""
+    from collections import defaultdict
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    events = (
+        db.query(Event)
+        .filter(
+            Event.user_hash == user_hash,
+            Event.event_type == "slack_sentiment",
+            Event.timestamp >= cutoff,
+        )
+        .order_by(Event.timestamp.asc())
+        .all()
+    )
+
+    score_map = {"negative": -1.0, "neutral": 0.0, "positive": 1.0}
+    daily_scores: dict[str, list[float]] = defaultdict(list)
+
+    for evt in events:
+        if evt.timestamp is None:
+            continue
+        date_key = evt.timestamp.date().isoformat()
+        meta = evt.metadata_ if isinstance(evt.metadata_, dict) else {}
+        score_str = meta.get("score", "neutral")
+        daily_scores[date_key].append(score_map.get(score_str, 0.0))
+
+    result = []
+    for date_key in sorted(daily_scores.keys()):
+        values = daily_scores[date_key]
+        avg_score = round(sum(values) / len(values), 2)
+        result.append({"date": date_key, "score": avg_score, "count": len(values)})
+
+    return {"success": True, "data": result}
+
+
 # ============ RISK HISTORY ============
 
 
