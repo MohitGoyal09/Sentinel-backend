@@ -88,10 +88,11 @@ class SafetyValve:
             risk_level = existing.risk_level or "LOW"
             attrition_prob = float(existing.attrition_probability or 0.0)
 
-            # Still compute entropy and indicators from events for display
+            # Still compute entropy, sentiment, and indicators from events for display
             events = self._get_events(user_hash, 21)
             hours = self._extract_daily_hours(events) if events else []
             entropy = self._calculate_entropy(hours) if hours else 0.0
+            sentiment = self._calculate_sentiment_score(user_hash, events) if events else None
 
             indicators = {
                 "chaotic_hours": entropy > 1.5,
@@ -109,6 +110,8 @@ class SafetyValve:
                 "belongingness_score": round(belongingness, 2),
                 "circadian_entropy": round(entropy, 2),
                 "attrition_probability": attrition_prob,
+                "sentiment_score": sentiment,
+                "sentiment_available": sentiment is not None,
                 "indicators": indicators,
                 "events_analyzed": len(events) if events else 0,
                 "analysis_window_days": 21,
@@ -172,6 +175,12 @@ class SafetyValve:
             elif e.event_type in ("email_sent",):
                 sources.add("email")
 
+        # Sentiment signal (4th dimension)
+        has_sentiment_events = any(e.event_type == "slack_sentiment" for e in events)
+        if has_sentiment_events:
+            sources.add("slack_sentiment")
+        sentiment = self._calculate_sentiment_score(user_hash, events)
+
         source_count = max(len(sources), 1)
         source_multiplier = min(source_count / 3.0, 1.0)  # 1 source=0.33, 2=0.67, 3+=1.0
         confidence = round(r_squared * source_multiplier, 3)
@@ -206,6 +215,8 @@ class SafetyValve:
             "belongingness_score": round(float(belongingness), 2),
             "circadian_entropy": round(float(entropy), 2),
             "attrition_probability": attrition_prob,
+            "sentiment_score": sentiment,
+            "sentiment_available": sentiment is not None,
             "sources_used": list(sources),
             "source_count": source_count,
             "explained_events_filtered": explained_count,
@@ -364,6 +375,27 @@ class SafetyValve:
             if interactions
             else 0.5
         )
+
+    def _calculate_sentiment_score(self, user_hash: str, events: List[Event]) -> Optional[float]:
+        """Average sentiment from slack_sentiment events.
+
+        Returns None if fewer than 3 sentiment events exist (insufficient data).
+        Maps: negative=-1, neutral=0, positive=1, returns the mean.
+        """
+        score_map = {"negative": -1.0, "neutral": 0.0, "positive": 1.0}
+        sentiment_events = [
+            e for e in events
+            if e.event_type == "slack_sentiment"
+            and isinstance(e.metadata_, dict)
+        ]
+        if len(sentiment_events) < 3:
+            return None
+
+        values = [
+            score_map.get(e.metadata_.get("score", "neutral"), 0.0)
+            for e in sentiment_events
+        ]
+        return round(sum(values) / len(values), 2)
 
     def _extract_daily_hours(self, events: List[Event]) -> List[int]:
         return [e.timestamp.hour for e in events]

@@ -9,7 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+# Install uv for fast dependency resolution
+RUN pip install --no-cache-dir uv
+
+# Copy dependency files first for layer caching
+COPY pyproject.toml uv.lock* requirements.txt ./
+
+# Install dependencies using requirements.txt (pinned versions for reproducibility)
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Stage 2: Runtime
@@ -22,11 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Create non-root user
 RUN groupadd --gid 1000 sentinel \
     && useradd --uid 1000 --gid sentinel --shell /bin/bash --create-home sentinel
 
+# Copy application code
 COPY --chown=sentinel:sentinel . .
 
 USER sentinel

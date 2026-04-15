@@ -1007,6 +1007,84 @@ NOTIFICATIONS = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Sentiment Event Seeds
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Per-persona sentiment distributions (score weights and day ranges)
+_SENTIMENT_PROFILES = {
+    # Jordan Lee (burnout): mostly negative in recent days
+    "dev1@acme.com": {
+        "count": 14,
+        "weights": lambda day: (
+            ["negative"] * 5 + ["neutral"] * 2 + ["positive"] * 1
+            if day <= 4
+            else ["negative"] * 3 + ["neutral"] * 3 + ["positive"] * 2
+        ),
+    },
+    # Sarah Chen (admin): mostly positive
+    "admin@acme.com": {
+        "count": 12,
+        "weights": lambda day: ["positive"] * 6 + ["neutral"] * 3 + ["negative"] * 1,
+    },
+    # Priya Sharma (manager): mixed, declining recently
+    "eng.manager@acme.com": {
+        "count": 13,
+        "weights": lambda day: (
+            ["negative"] * 4 + ["neutral"] * 3 + ["positive"] * 1
+            if day <= 3
+            else ["positive"] * 3 + ["neutral"] * 3 + ["negative"] * 2
+        ),
+    },
+}
+
+
+def seed_sentiment_events(db, tenant_id, user_hashes: dict, now: datetime) -> int:
+    """Create slack_sentiment events per user for demo display.
+
+    Jordan: mostly negative (burnout narrative).
+    Sarah: mostly positive (healthy).
+    Priya: mixed declining (manager overload).
+    Others: random mix.
+    """
+    channels = ["engineering", "general", "design", "data-science", "random"]
+    total = 0
+
+    for email, uh in user_hashes.items():
+        profile = _SENTIMENT_PROFILES.get(email)
+        count = profile["count"] if profile else rng.randint(10, 15)
+
+        for i in range(count):
+            day = rng.randint(1, 10)
+            hour = rng.randint(9, 17)
+            minute = rng.randint(0, 59)
+
+            if profile:
+                score = rng.choice(profile["weights"](day))
+            else:
+                score = rng.choice(
+                    ["positive"] * 4 + ["neutral"] * 4 + ["negative"] * 2
+                )
+
+            confidence = round(rng.uniform(0.65, 0.95), 2)
+
+            db.add(Event(
+                user_hash=uh,
+                tenant_id=tenant_id,
+                timestamp=now - timedelta(days=day, hours=24 - hour, minutes=60 - minute),
+                event_type="slack_sentiment",
+                metadata_={
+                    "score": score,
+                    "confidence": confidence,
+                    "channel": rng.choice(channels),
+                    "source": "slack_sentiment",
+                },
+            ))
+            total += 1
+
+    return total
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Supabase Auth helpers (UNCHANGED)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1100,7 +1178,7 @@ def seed():
         _clear_supabase_users()
 
         # -- Step 1: Create Tenant ---------------------------------
-        log.info("\n[1/10] Creating tenant...")
+        log.info("\n[1/11] Creating tenant...")
         tenant = Tenant(
             name=ORG_NAME,
             slug=ORG_SLUG,
@@ -1116,7 +1194,7 @@ def seed():
         log.info(f"    Tenant: {ORG_NAME} ({tenant.id})")
 
         # -- Step 2: Create Teams ----------------------------------
-        log.info("\n[2/10] Creating teams...")
+        log.info("\n[2/11] Creating teams...")
         team_map = {}
         for t in TEAMS:
             manager_hash = privacy.hash_identity(t["manager_email"])
@@ -1131,7 +1209,7 @@ def seed():
             log.info(f"    Team: {t['name']} (manager: {t['manager_email']})")
 
         # -- Step 3: Create Users + TenantMembers ------------------
-        log.info("\n[3/10] Creating users and memberships...")
+        log.info("\n[3/11] Creating users and memberships...")
         user_hashes = {}
 
         for u in DEMO_USERS:
@@ -1167,7 +1245,7 @@ def seed():
         db.flush()
 
         # -- Step 4: Risk Scores + Trending History ----------------
-        log.info("\n[4/10] Creating risk scores and trending history...")
+        log.info("\n[4/11] Creating risk scores and trending history...")
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
             profile = RISK_PROFILES[u["email"]]
@@ -1205,7 +1283,7 @@ def seed():
         log.info(f"    {len(DEMO_USERS)} risk scores + {len(DEMO_USERS) * 30} history entries")
 
         # -- Step 5: Deterministic Skill Profiles + Centrality -----
-        log.info("\n[5/10] Creating skill profiles and network scores...")
+        log.info("\n[5/11] Creating skill profiles and network scores...")
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
             sp = SKILL_PROFILES[u["email"]]
@@ -1235,7 +1313,7 @@ def seed():
         log.info(f"    {len(DEMO_USERS)} skill profiles + {len(DEMO_USERS)} centrality scores")
 
         # -- Step 6: Persona-Driven Events + Graph Edges -----------
-        log.info("\n[6/10] Creating persona-driven events and graph edges...")
+        log.info("\n[6/11] Creating persona-driven events and graph edges...")
         all_hashes = list(user_hashes.values())
         event_count = 0
 
@@ -1256,7 +1334,7 @@ def seed():
         log.info(f"    {event_count} events + {len(edges)} graph edges")
 
         # -- Step 7: Notifications ---------------------------------
-        log.info("\n[7/10] Creating notifications...")
+        log.info("\n[7/11] Creating notifications...")
         notif_count = 0
         for u in DEMO_USERS:
             uh = user_hashes[u["email"]]
@@ -1286,14 +1364,19 @@ def seed():
         log.info(f"    {notif_count} notifications + {len(DEMO_USERS) * 10} preferences")
 
         # -- Step 8: Rich Audit Log Timeline -----------------------
-        log.info("\n[8/10] Creating rich audit log timeline...")
+        log.info("\n[8/11] Creating rich audit log timeline...")
         audit_entries = _generate_audit_logs(user_hashes, tenant.id, now)
         for entry in audit_entries:
             db.add(entry)
         log.info(f"    {len(audit_entries)} audit log entries")
 
-        # -- Step 9: Shadow Deployment Validation ------------------
-        log.info("\n[9/10] Creating shadow deployment validation data...")
+        # -- Step 9: Sentiment Events ------------------------------
+        log.info("\n[9/11] Creating sentiment events...")
+        sentiment_count = seed_sentiment_events(db, tenant.id, user_hashes, now)
+        log.info(f"    {sentiment_count} slack_sentiment events across {len(user_hashes)} users")
+
+        # -- Step 10: Shadow Deployment Validation -----------------
+        log.info("\n[10/11] Creating shadow deployment validation data...")
         shadow_entries = seed_shadow_departures(db, tenant.id, user_hashes, now)
         for entry in shadow_entries:
             db.add(entry)
@@ -1304,8 +1387,8 @@ def seed():
             f"accuracy {shadow_correct / max(len(shadow_entries), 1) * 100:.1f}%)"
         )
 
-        # -- Step 10: Seed Chat Sessions ---------------------------
-        log.info("\n[10/10] Creating pre-seeded chat sessions...")
+        # -- Step 11: Seed Chat Sessions ---------------------------
+        log.info("\n[11/11] Creating pre-seeded chat sessions...")
         sessions, history = _generate_chat_sessions(user_hashes, tenant.id, now)
         for s in sessions:
             db.add(s)
@@ -1324,6 +1407,7 @@ def seed():
         log.info(f"  Events: {event_count}")
         log.info(f"  Graph Edges: {len(edges)}")
         log.info(f"  Audit Logs: {len(audit_entries)}")
+        log.info(f"  Sentiment Events: {sentiment_count}")
         log.info(f"  Shadow Departures: {len(shadow_entries)} (accuracy {shadow_correct / max(len(shadow_entries), 1) * 100:.1f}%)")
         log.info(f"  Chat Sessions: {len(sessions)}")
         log.info("=" * 60)

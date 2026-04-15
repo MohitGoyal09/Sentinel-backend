@@ -1,0 +1,65 @@
+# Sentinel Backend -- Docker Compose
+#
+# Usage:
+#   docker-compose up --build        Start all services
+#   docker-compose up -d             Start in background
+#   docker-compose down              Stop and remove containers
+#   docker-compose down -v           Stop and remove containers + volumes
+#
+# The backend waits for postgres and redis to be healthy before starting.
+# On first run, tables are created automatically via Base.metadata.create_all().
+
+services:
+  backend:
+    build: .
+    container_name: sentinel-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to point to the compose postgres service
+      DATABASE_URL: postgresql://postgres:sentinel_dev_password@postgres:5432/sentinel
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: sentinel_dev_password
+      POSTGRES_DB: sentinel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

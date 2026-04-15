@@ -215,6 +215,10 @@ class DataSyncService:
                 elif isinstance(data, list):
                     messages = data
 
+            # Create analyzer once before the loop (not per-message)
+            from app.services.sentiment_analyzer import SentimentAnalyzer
+            analyzer = SentimentAnalyzer()
+
             for msg in messages:
                 try:
                     msg_data = {
@@ -252,6 +256,37 @@ class DataSyncService:
                     )
                     self.db.add(event)
                     ingested += 1
+
+                    # Sentiment classification — text is never stored
+                    msg_text = msg.get("text", "")
+                    if msg_text and len(msg_text) > 3:
+                        # Dedup sentiment by same source_id (Slack ts)
+                        if source_id:
+                            existing_sentiment = self.db.query(Event).filter(
+                                Event.user_hash == user_hash,
+                                Event.event_type == "slack_sentiment",
+                            ).filter(
+                                Event.metadata_["source_id"].astext == source_id
+                            ).first()
+                            if existing_sentiment:
+                                continue
+
+                        sentiment = await analyzer.classify(msg_text)
+                        if sentiment["confidence"] > 0:
+                            sentiment_event = Event(
+                                user_hash=user_hash,
+                                tenant_id=tenant_id,
+                                timestamp=normalized.timestamp,
+                                event_type="slack_sentiment",
+                                metadata_={
+                                    "score": sentiment["score"],
+                                    "confidence": sentiment["confidence"],
+                                    "channel": msg_data.get("channel", "unknown"),
+                                    "source": "slack_sentiment",
+                                    "source_id": source_id,
+                                },
+                            )
+                            self.db.add(sentiment_event)
 
                     # Create GraphEdge for replies (replier -> original poster)
                     if msg_data["is_reply"] and msg.get("previous_message", {}).get("user"):

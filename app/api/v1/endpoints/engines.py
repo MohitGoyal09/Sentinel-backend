@@ -737,6 +737,29 @@ def list_users(
 
     users = query.offset(skip).limit(limit).all()
 
+    # Batch-fetch sentiment scores for all users in this page
+    user_hashes_in_page = [u[0] for u in users]
+    sentiment_map: dict = {}
+    if user_hashes_in_page:
+        score_map = {"negative": -1.0, "neutral": 0.0, "positive": 1.0}
+        sentiment_rows = (
+            db.query(Event)
+            .filter(
+                Event.user_hash.in_(user_hashes_in_page),
+                Event.event_type == "slack_sentiment",
+            )
+            .all()
+        )
+        from collections import defaultdict
+        _sent_values: dict[str, list[float]] = defaultdict(list)
+        for evt in sentiment_rows:
+            meta = evt.metadata_ if isinstance(evt.metadata_, dict) else {}
+            score_str = meta.get("score", "neutral")
+            _sent_values[evt.user_hash].append(score_map.get(score_str, 0.0))
+        for uh, vals in _sent_values.items():
+            if len(vals) >= 3:
+                sentiment_map[uh] = round(sum(vals) / len(vals), 2)
+
     result = []
     for user in users:
         (
@@ -767,6 +790,7 @@ def list_users(
         if not name:
             name = f"User {user_hash[:4]}"
 
+        user_sentiment = sentiment_map.get(user_hash)
         result.append(
             {
                 "user_hash": user_hash,
@@ -776,6 +800,8 @@ def list_users(
                 "velocity": velocity or 0.0,
                 "confidence": confidence or 0.0,
                 "updated_at": updated_at.isoformat() if updated_at else None,
+                "sentiment_score": user_sentiment,
+                "sentiment_available": user_sentiment is not None,
             }
         )
 
