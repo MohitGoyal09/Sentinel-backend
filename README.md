@@ -292,8 +292,8 @@ All configuration is managed through environment variables loaded from a `.env` 
 
 ```bash
 # Clone the repository
-git clone https://github.com/MohitGoyal09/algoquest-backend.git
-cd algoquest-backend
+git clone https://github.com/MohitGoyal09/Sentinel-backend.git
+cd Sentinel-backend
 
 # Install the uv package manager
 pip install uv
