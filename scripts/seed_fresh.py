@@ -234,6 +234,14 @@ def _risk_history_belonging(email: str, day: int) -> float:
 
 EVENT_TYPES = ["commit", "pr_review", "slack_message", "unblocked", "standup", "code_review", "meeting", "email_sent", "ticket_created"]
 
+EVENT_SOURCE_MAP = {
+    "commit": "github", "pr_review": "github", "code_review": "github", "unblocked": "github",
+    "slack_message": "slack", "standup": "slack",
+    "meeting": "calendar",
+    "email_sent": "email",
+    "ticket_created": "jira",
+}
+
 
 def _pick_hour_jordan() -> int:
     """Jordan (chaotic): 40% 20:00-23:00, 30% 14:00-20:00, 30% random."""
@@ -340,7 +348,7 @@ def _generate_event_metadata(
         ctx = rng.randint(2, 5)
 
     meta = {
-        "source": "demo_seed",
+        "source": EVENT_SOURCE_MAP.get(event_type, "unknown"),
         "after_hours": after_hours,
         "context_switches": ctx,
     }
@@ -375,10 +383,14 @@ def _generate_event_metadata(
             meta["files_changed"] = rng.randint(2, 5)
         else:
             meta["files_changed"] = rng.randint(1, 8)
+        meta["additions"] = rng.randint(10, 500)
+        meta["deletions"] = rng.randint(5, 200)
 
     elif event_type == "pr_review" or event_type == "code_review":
         meta["comment_length"] = rng.randint(50, 500)
         meta["files_changed"] = rng.randint(1, 10)
+        meta["additions"] = rng.randint(10, 500)
+        meta["deletions"] = rng.randint(5, 200)
 
     elif event_type == "email_sent":
         meta["recipient_count"] = rng.randint(1, 5)
@@ -403,11 +415,11 @@ def _generate_persona_events(
     all_hashes: list,
     now: datetime,
 ) -> list:
-    """Generate persona-specific events over 14 days."""
+    """Generate persona-specific events over 21 days."""
     events = []
     hour_picker = HOUR_PICKERS.get(email, _pick_hour_default)
 
-    for day in range(14, 0, -1):
+    for day in range(21, 0, -1):
         is_weekend = (now - timedelta(days=day)).weekday() >= 5
 
         if email == "dev1@acme.com":
@@ -505,7 +517,7 @@ def _generate_persona_events(
             events.append(Event(
                 user_hash=user_hash,
                 tenant_id=tenant_id,
-                timestamp=now - timedelta(days=day, hours=24 - hour, minutes=60 - minute),
+                timestamp=(now - timedelta(days=day)).replace(hour=hour, minute=minute, second=rng.randint(0, 59), microsecond=0),
                 event_type=event_type,
                 target_user_hash=target,
                 metadata_=metadata,
@@ -703,10 +715,13 @@ def _generate_audit_logs(
         "hr1@acme.com":            [1, 3, 5, 8, 11, 13],
     }
     login_methods = ["email", "email", "email", "google_sso"]
+    login_ips = ["10.0.1.42", "10.0.1.87", "172.16.0.15", "192.168.1.105", "10.0.2.33", "172.16.1.12", "10.0.1.201"]
     for u in DEMO_USERS:
         uh = user_hashes[u["email"]]
         days = login_schedules.get(u["email"], [1, 5, 10])
         for d_idx, d in enumerate(days):
+            login_hour = rng.randint(7, 10)  # realistic morning login window
+            ip = rng.choice(login_ips)
             logs.append(AuditLog(
                 tenant_id=tenant_id,
                 actor_hash=uh,
@@ -714,9 +729,9 @@ def _generate_audit_logs(
                 action="auth:login",
                 details={
                     "method": login_methods[d_idx % len(login_methods)],
-                    "ip": "192.168.1.100",
+                    "ip": ip,
                 },
-                timestamp=now - timedelta(days=d, hours=9),
+                timestamp=now - timedelta(days=d, hours=login_hour),
             ))
 
     # 4. role_changed — Chen Wei: employee -> manager (-15 days)
@@ -830,7 +845,7 @@ SHADOW_DEPARTURES = [
         "days_ago": 4,
     },
     {
-        "email": "dev2@acme.com",       # Maria Santos — CRITICAL, correctly predicted
+        "email": "dev3@acme.com",       # David Kim — CRITICAL, correctly predicted
         "departure_date": "2026-04-12",
         "reason": "voluntary",
         "predicted_risk": "CRITICAL",
@@ -858,7 +873,7 @@ def seed_shadow_departures(
 ) -> list:
     """Create shadow departure audit log entries for demo validation.
 
-    Produces 3 departures: 2 correctly predicted (Jordan, Maria),
+    Produces 3 departures: 2 correctly predicted (Jordan, David),
     1 false negative (Sarah). Accuracy: 66.7% — honest, not perfect.
     """
     entries = []
@@ -1070,7 +1085,7 @@ def seed_sentiment_events(db, tenant_id, user_hashes: dict, now: datetime) -> in
             db.add(Event(
                 user_hash=uh,
                 tenant_id=tenant_id,
-                timestamp=now - timedelta(days=day, hours=24 - hour, minutes=60 - minute),
+                timestamp=(now - timedelta(days=day)).replace(hour=hour, minute=minute, second=rng.randint(0, 59), microsecond=0),
                 event_type="slack_sentiment",
                 metadata_={
                     "score": score,

@@ -329,10 +329,12 @@ This creates a complete demo environment with deterministic data (`Random(42)`):
 - 1 tenant: **Acme Technologies** (enterprise plan)
 - 15 users across 5 teams (Engineering, Design, Data Science, Sales, People Ops)
 - Pre-computed risk scores, skill profiles, and centrality scores
-- 624 behavioral events over 14 days with persona-driven patterns
+- ~1,260 behavioral events over 21 days with persona-driven patterns (the Safety Valve engine queries a 21-day window)
+- Events use realistic source fields (`github`, `slack`, `calendar`, `email`, `jira`) instead of a generic demo source
+- Commit events include `additions` and `deletions` metadata so the velocity engine's complexity weighting works correctly
 - 450 risk history entries (30-day trends per user)
 - 60 graph edges (team clusters + cross-team bridges)
-- 116 audit logs covering 12 action types
+- 116 audit logs covering 12 action types, with login IPs randomized across 7 office/VPN addresses and login hours varying between 7-10 AM
 - 2 pre-seeded chat sessions
 - 69 notifications with 150 preferences
 
@@ -562,7 +564,7 @@ All users belong to the **Acme Technologies** tenant. Password for all accounts:
 - **Jordan Lee** (`dev1@acme.com`) -- CRITICAL burnout. Velocity 3.2, belongingness 0.25, chaotic hours (22:00-03:00). Primary Safety Valve demo subject.
 - **Emma Thompson** (`dev4@acme.com`) -- Hidden gem. Betweenness 0.85, eigenvector 0.15, unblocking count 22. Bridges Engineering and Design. Primary Talent Scout demo subject.
 - **Maria Santos** (`dev2@acme.com`) -- Healthy baseline. Velocity 0.6, belongingness 0.75. Consistent 9-5 pattern. Control group.
-- **David Kim** (`dev3@acme.com`) -- ELEVATED warning. Velocity 2.0, hours trending up. Moving toward CRITICAL.
+- **David Kim** (`dev3@acme.com`) -- ELEVATED warning and shadow departure subject. Velocity 2.0, hours trending up. His ELEVATED risk level makes the CRITICAL attrition prediction consistent with the model's inputs.
 
 ---
 
