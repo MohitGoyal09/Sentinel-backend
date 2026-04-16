@@ -211,6 +211,22 @@ def root():
     }
 
 
+@app.get("/debug/env")
+def debug_env():
+    """Temporary debug endpoint — remove after deployment is verified."""
+    return {
+        "supabase_url_set": bool(settings.supabase_url),
+        "supabase_url_prefix": settings.supabase_url[:30] + "..." if settings.supabase_url else "EMPTY",
+        "supabase_key_set": bool(settings.supabase_key),
+        "supabase_key_length": len(settings.supabase_key) if settings.supabase_key else 0,
+        "supabase_service_key_set": bool(settings.supabase_service_key),
+        "vault_salt_set": bool(settings.vault_salt),
+        "jwt_secret_set": bool(settings.jwt_secret),
+        "allowed_origins": settings.allowed_origins,
+        "environment": settings.environment,
+    }
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint for monitoring"""
