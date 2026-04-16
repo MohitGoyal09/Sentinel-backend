@@ -116,8 +116,9 @@ class EventData(BaseModel):
 
 
 class RealtimeEventData(BaseModel):
-    new_event: EventData
-    updated_risk: SafetyValveData
+    event_id: Optional[int] = None
+    new_event: Optional[EventData] = None
+    updated_risk: Optional[SafetyValveData] = None
 
 
 # Typed API Responses

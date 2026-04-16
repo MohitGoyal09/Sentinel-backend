@@ -128,6 +128,17 @@ class TalentScout:
         except Exception:
             pass
 
+        # Fetch actual risk levels from RiskScore table
+        from app.models.analytics import RiskScore
+        risk_lookup: dict[str, str] = {}
+        try:
+            risk_rows = self.db.query(RiskScore.user_hash, RiskScore.risk_level).filter(
+                RiskScore.user_hash.in_(list(G.nodes()))
+            ).all()
+            risk_lookup = {r.user_hash: r.risk_level for r in risk_rows}
+        except Exception:
+            pass
+
         graph_nodes = []
 
         for node in G.nodes():
@@ -143,7 +154,7 @@ class TalentScout:
                     "id": node,
                     "label": name_lookup.get(node, f"User_{node[:4]}"),
                     "role": next((m.role for m in members if m.user_hash == node), "employee"),
-                    "risk_level": "LOW",
+                    "risk_level": risk_lookup.get(node, "LOW"),
                     "betweenness": round(bw, 3),
                     "eigenvector": round(ev, 3),
                     "unblocking_count": unb,

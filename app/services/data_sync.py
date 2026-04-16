@@ -555,47 +555,54 @@ class DataSyncService:
         }
 
 
-def background_sync(entity_id: str, user_hash: str, tenant_id: str, source: str = "all"):
-    """Background task wrapper with own DB session. Stores results in pipeline metrics."""
+async def _background_sync_async(entity_id: str, user_hash: str, tenant_id: str, source: str = "all"):
+    """Async core of background sync. Keeps the event loop alive so SafetyValve
+    can broadcast WebSocket updates after engine recomputation."""
     from app.api.v1.endpoints.ingestion import _pipeline_metrics
+
+    with SessionLocal() as db:
+        service = DataSyncService(db)
+        if source == "github":
+            result = await service.sync_github(entity_id, user_hash, tenant_id)
+            results = {"github": result}
+        elif source == "slack":
+            result = await service.sync_slack(entity_id, user_hash, tenant_id)
+            results = {"slack": result}
+        elif source == "calendar":
+            result = await service.sync_calendar(entity_id, user_hash, tenant_id)
+            results = {"calendar": result}
+        elif source == "gmail":
+            result = await service.sync_gmail(entity_id, user_hash, tenant_id)
+            results = {"gmail": result}
+        else:
+            full = await service.sync_all_connected(entity_id, user_hash, tenant_id)
+            results = full.get("sources", {})
+
+    # Track ingested counts per source
+    for src_name, src_result in results.items():
+        count = src_result.get("ingested", 0)
+        if count > 0:
+            _pipeline_metrics["events_by_source"][src_name] = (
+                _pipeline_metrics["events_by_source"].get(src_name, 0) + count
+            )
+            _pipeline_metrics["total_ingested"] += count
+
+    # Trigger engine recomputation (runs in this event loop so broadcasts work)
+    from app.api.v1.endpoints.engines import run_all_engines
+    run_all_engines(user_hash, tenant_id=tenant_id)
+
+    # Record engine run result
+    _pipeline_metrics["last_engine_run"] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_hash": user_hash[:8],
+        "sources_synced": {k: v.get("ingested", 0) for k, v in results.items()},
+    }
+
+
+def background_sync(entity_id: str, user_hash: str, tenant_id: str, source: str = "all"):
+    """Background task wrapper. Single asyncio.run() keeps the event loop alive
+    for the entire sync + engine cycle, enabling WebSocket broadcasts."""
     try:
-        with SessionLocal() as db:
-            service = DataSyncService(db)
-            if source == "github":
-                result = asyncio.run(service.sync_github(entity_id, user_hash, tenant_id))
-                results = {"github": result}
-            elif source == "slack":
-                result = asyncio.run(service.sync_slack(entity_id, user_hash, tenant_id))
-                results = {"slack": result}
-            elif source == "calendar":
-                result = asyncio.run(service.sync_calendar(entity_id, user_hash, tenant_id))
-                results = {"calendar": result}
-            elif source == "gmail":
-                result = asyncio.run(service.sync_gmail(entity_id, user_hash, tenant_id))
-                results = {"gmail": result}
-            else:
-                full = asyncio.run(service.sync_all_connected(entity_id, user_hash, tenant_id))
-                results = full.get("sources", {})
-
-        # Track ingested counts per source
-        for src_name, src_result in results.items():
-            count = src_result.get("ingested", 0)
-            if count > 0:
-                _pipeline_metrics["events_by_source"][src_name] = (
-                    _pipeline_metrics["events_by_source"].get(src_name, 0) + count
-                )
-                _pipeline_metrics["total_ingested"] += count
-
-        # Trigger engine recomputation
-        from app.api.v1.endpoints.engines import run_all_engines
-        run_all_engines(user_hash)
-
-        # Record engine run result
-        _pipeline_metrics["last_engine_run"] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "user_hash": user_hash[:8],
-            "sources_synced": {k: v.get("ingested", 0) for k, v in results.items()},
-        }
-
+        asyncio.run(_background_sync_async(entity_id, user_hash, tenant_id, source))
     except Exception as e:
         logger.error("Background sync failed for %s: %s", user_hash[:8], e)

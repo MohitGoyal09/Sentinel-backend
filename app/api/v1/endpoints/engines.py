@@ -137,6 +137,21 @@ def create_persona(
     vault = VaultManager(db, db)
 
     user_hash = vault.store_identity(request.email, tenant_id=member.tenant_id)
+
+    # Ensure persona has a TenantMember record so it appears in user lists
+    existing_member = db.query(TenantMember).filter_by(
+        tenant_id=member.tenant_id, user_hash=user_hash
+    ).first()
+    if not existing_member:
+        persona_name = request.email.split("@")[0].replace("_", " ").title()
+        db.add(TenantMember(
+            tenant_id=member.tenant_id,
+            user_hash=user_hash,
+            role="employee",
+            display_name=persona_name,
+        ))
+        db.flush()
+
     events = sim.create_persona(request.persona_type, user_hash, tenant_id=member.tenant_id)
 
     for event in events:
@@ -914,7 +929,7 @@ def inject_event(
 
     # Ensure user exists in our system
     try:
-        user_hash = vault.store_identity(request.user_hash)
+        user_hash = vault.store_identity(request.user_hash, tenant_id=member.tenant_id)
     except Exception:
         # Fallback: use the provided user_hash directly
         user_hash = request.user_hash
@@ -947,8 +962,12 @@ def inject_event(
         success=True,
         data={
             "event_id": event.id,
-            "user_hash": user_hash,
-            "event_type": event.event_type,
+            "new_event": {
+                "user_hash": user_hash,
+                "timestamp": event.timestamp.isoformat() if event.timestamp else "",
+                "event_type": event.event_type,
+                "metadata": event.metadata_ or {},
+            },
         },
     )
 

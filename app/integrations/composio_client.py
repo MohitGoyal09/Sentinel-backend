@@ -618,7 +618,7 @@ class ComposioClient:
             },
             "github": {
                 "list_commits": "GITHUB_LIST_COMMITS",
-                "list_repos": "GITHUB_LIST_USER_REPOS",
+                "list_repos": "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER",
                 "get_pull_request": "GITHUB_GET_A_PULL_REQUEST",
                 "list_notifications": "GITHUB_LIST_NOTIFICATIONS",
             },

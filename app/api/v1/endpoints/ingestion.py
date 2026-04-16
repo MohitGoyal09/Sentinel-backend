@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, UploadFile, File, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, UploadFile, File, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -86,13 +86,50 @@ class IngestionEvent(BaseModel):
 
 
 # ============================================
+# Helpers
+# ============================================
+
+# Map event_type to source label for the live feed
+_EVENT_SOURCE_LABEL = {
+    "commit": "git", "pr_review": "git", "code_review": "git", "unblocked": "git",
+    "slack_message": "slack", "standup": "slack", "slack_sentiment": "slack",
+    "meeting": "calendar", "email_sent": "gmail", "ticket_created": "jira",
+}
+
+
+def _get_recent_events_from_db(db: Session, limit: int = 20) -> list[dict]:
+    """Fetch recent events from DB as fallback when in-memory list is empty."""
+    try:
+        rows = (
+            db.query(Event)
+            .order_by(Event.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": str(row.id),
+                "timestamp": row.timestamp.isoformat() if row.timestamp else "",
+                "source": _EVENT_SOURCE_LABEL.get(row.event_type, row.event_type),
+                "event_type": row.event_type,
+                "user_hash": (row.user_hash[:8] + "...") if row.user_hash else "",
+                "status": "ingested",
+                "latency_ms": 0.0,
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+# ============================================
 # Endpoints
 # ============================================
 
 @router.get("/status")
 async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(require_role("admin", "manager"))):
     """Get full pipeline status including connectors, stages, metrics."""
-    # Query actual DB counts
+    # Query actual DB counts including seed data
     try:
         total_events = db.query(func.count(Event.id)).scalar() or 0
         total_users = db.query(func.count(UserIdentity.user_hash)).scalar() or 0
@@ -101,10 +138,48 @@ async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(requir
         recent_count = db.query(func.count(Event.id)).filter(
             Event.timestamp >= one_hour_ago
         ).scalar() or 0
+        # Count events by source (event_type → connector mapping)
+        event_type_counts = dict(
+            db.query(Event.event_type, func.count(Event.id))
+            .group_by(Event.event_type)
+            .all()
+        )
     except Exception:
         total_events = _pipeline_metrics["total_ingested"]
         total_users = 0
         recent_count = 0
+        event_type_counts = {}
+
+    # Map event types to connector sources
+    SOURCE_EVENT_MAP = {
+        "git": ["commit", "pr_review", "code_review", "unblocked"],
+        "slack": ["slack_message", "standup", "slack_sentiment"],
+        "calendar": ["meeting"],
+        "gmail": ["email_sent"],
+        "jira": ["ticket_created"],
+    }
+    db_events_by_source: dict[str, int] = {}
+    for source_key, event_types in SOURCE_EVENT_MAP.items():
+        db_events_by_source[source_key] = sum(
+            event_type_counts.get(et, 0) for et in event_types
+        )
+
+    # Query most recent event timestamp per source connector
+    last_sync_by_source: dict[str, Optional[str]] = {}
+    try:
+        for source_key, event_types in SOURCE_EVENT_MAP.items():
+            if not event_types:
+                continue
+            latest_ts = (
+                db.query(func.max(Event.timestamp))
+                .filter(Event.event_type.in_(event_types))
+                .scalar()
+            )
+            last_sync_by_source[source_key] = (
+                latest_ts.isoformat() if latest_ts else None
+            )
+    except Exception:
+        pass  # graceful fallback — last_sync stays None
 
     # Query real Composio connection status
     connected_tools: list[str] = []
@@ -122,6 +197,7 @@ async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(requir
     TOOL_CONNECTOR_MAP = {
         "github": "Git", "slack": "Slack", "slackbot": "Slack",
         "googlecalendar": "Calendar", "google_calendar": "Calendar",
+        "gmail": "Gmail", "google_gmail": "Gmail",
     }
 
     def connector_status(name: str) -> str:
@@ -131,34 +207,51 @@ async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(requir
         return "not_configured"
 
     csv_events = _pipeline_metrics["events_by_source"].get("csv", 0)
+
+    def events_for(source_key: str) -> int:
+        """DB events + any in-memory events from live sync."""
+        return db_events_by_source.get(source_key, 0) + _pipeline_metrics["events_by_source"].get(source_key, 0)
+
     connectors = [
         ConnectorInfo(
             name="Git",
             status=connector_status("Git"),
             icon="git-branch",
-            events_ingested=_pipeline_metrics["events_by_source"].get("git", 0),
-            description="Commit history, PR reviews, code frequency. Connect via Integrations.",
+            events_ingested=events_for("git"),
+            last_sync=last_sync_by_source.get("git"),
+            description="Commit history, PR reviews, code frequency.",
         ),
         ConnectorInfo(
             name="Slack",
             status=connector_status("Slack"),
             icon="message-square",
-            events_ingested=_pipeline_metrics["events_by_source"].get("slack", 0),
-            description="Message patterns, response times. Connect via Integrations.",
-        ),
-        ConnectorInfo(
-            name="Jira",
-            status="not_configured",
-            icon="clipboard-list",
-            events_ingested=_pipeline_metrics["events_by_source"].get("jira", 0),
-            description="Sprint velocity, ticket lifecycle. Connect via Integrations.",
+            events_ingested=events_for("slack"),
+            last_sync=last_sync_by_source.get("slack"),
+            description="Message patterns, response times, reactions.",
         ),
         ConnectorInfo(
             name="Calendar",
             status=connector_status("Calendar"),
             icon="calendar",
-            events_ingested=_pipeline_metrics["events_by_source"].get("calendar", 0),
-            description="Meeting load, focus time. Connect via Integrations.",
+            events_ingested=events_for("calendar"),
+            last_sync=last_sync_by_source.get("calendar"),
+            description="Meeting load, focus time, attendee patterns.",
+        ),
+        ConnectorInfo(
+            name="Gmail",
+            status=connector_status("Gmail"),
+            icon="mail",
+            events_ingested=events_for("gmail"),
+            last_sync=last_sync_by_source.get("gmail"),
+            description="Email volume, response cadence, thread activity.",
+        ),
+        ConnectorInfo(
+            name="Jira",
+            status="not_configured",
+            icon="clipboard-list",
+            events_ingested=events_for("jira"),
+            last_sync=last_sync_by_source.get("jira"),
+            description="Sprint velocity, ticket lifecycle, backlog health.",
         ),
         ConnectorInfo(
             name="CSV Upload",
@@ -234,7 +327,7 @@ async def get_pipeline_status(db: Session = Depends(get_db), user=Depends(requir
                 1,
             ),
         },
-        "recent_events": _pipeline_metrics["recent_events"][-30:],
+        "recent_events": _pipeline_metrics["recent_events"][-30:] or _get_recent_events_from_db(db),
         "last_engine_run": _pipeline_metrics.get("last_engine_run"),
     }
 

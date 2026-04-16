@@ -72,52 +72,10 @@ class SafetyValve:
         return round(float(probability), 2)
 
     def analyze(self, user_hash: str) -> Dict:
-        """Analyze burnout risk for a single user."""
-        # Check for existing RiskScore (from seed or prior computation)
-        # If it exists, return it directly — don't overwrite curated data
-        query = self.db.query(RiskScore).filter_by(user_hash=user_hash)
-        if self.tenant_id is not None:
-            query = query.filter(RiskScore.tenant_id == self.tenant_id)
-        existing = query.first()
+        """Analyze burnout risk for a single user.
 
-        if existing and existing.velocity is not None:
-            # Use stored values
-            velocity = float(existing.velocity)
-            confidence = float(existing.confidence or 0)
-            belongingness = float(existing.thwarted_belongingness or 0.5)
-            risk_level = existing.risk_level or "LOW"
-            attrition_prob = float(existing.attrition_probability or 0.0)
-
-            # Still compute entropy, sentiment, and indicators from events for display
-            events = self._get_events(user_hash, 21)
-            hours = self._extract_daily_hours(events) if events else []
-            entropy = self._calculate_entropy(hours) if hours else 0.0
-            sentiment = self._calculate_sentiment_score(user_hash, events) if events else None
-
-            indicators = {
-                "chaotic_hours": entropy > 1.5,
-                "social_withdrawal": belongingness < 0.4,
-                "sustained_intensity": velocity > 2.0,
-                "has_explained_context": False,
-            }
-
-            return {
-                "engine": "Safety Valve",
-                "status": "ANALYZED",
-                "risk_level": risk_level,
-                "velocity": round(velocity, 2),
-                "confidence": round(confidence, 3),
-                "belongingness_score": round(belongingness, 2),
-                "circadian_entropy": round(entropy, 2),
-                "attrition_probability": attrition_prob,
-                "sentiment_score": sentiment,
-                "sentiment_available": sentiment is not None,
-                "indicators": indicators,
-                "events_analyzed": len(events) if events else 0,
-                "analysis_window_days": 21,
-            }
-
-        # No existing score — fall through to event-based calculation
+        Always recomputes from events so newly injected data is reflected.
+        """
         events = self._get_events(user_hash, days=21)
 
         if len(events) < 14:
