@@ -75,7 +75,8 @@ def create_invite(
 
     # Validate team_id if provided
     team_uuid = None
-    if body.team_id is not None:
+    normalized_team_id = (body.team_id or "").strip().lower() if body.team_id is not None else None
+    if normalized_team_id not in (None, "", "none", "null"):
         try:
             team_uuid = UUID(body.team_id)
         except ValueError:

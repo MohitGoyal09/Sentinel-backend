@@ -162,6 +162,7 @@ class RiskHistoryEntry(BaseModel):
     timestamp: str
     risk_level: str
     velocity: float
+    belongingness_score: float = 0.0
 
 
 class RiskHistoryData(BaseModel):

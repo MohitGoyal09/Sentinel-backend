@@ -81,12 +81,14 @@ def create_team(
         )
 
     # Validate manager_hash if supplied
-    if body.manager_hash is not None:
+    normalized_manager_hash = (body.manager_hash or "").strip().lower() if body.manager_hash is not None else None
+    manager_hash = None if normalized_manager_hash in (None, "", "none", "null") else body.manager_hash
+    if manager_hash is not None:
         manager_member = (
             db.query(TenantMember)
             .filter(
                 TenantMember.tenant_id == tenant_id,
-                TenantMember.user_hash == body.manager_hash,
+                TenantMember.user_hash == manager_hash,
                 TenantMember.role.in_(["manager", "admin"]),
             )
             .first()
@@ -100,7 +102,7 @@ def create_team(
     team = Team(
         tenant_id=tenant_id,
         name=body.name,
-        manager_hash=body.manager_hash,
+        manager_hash=manager_hash,
     )
     db.add(team)
     db.commit()
@@ -181,12 +183,15 @@ def update_team(
             )
         team.name = body.name
 
-    if body.manager_hash is not None:
+    normalized_manager_hash = (body.manager_hash or "").strip().lower() if body.manager_hash is not None else None
+    manager_hash = None if normalized_manager_hash in (None, "", "none", "null") else body.manager_hash
+
+    if body.manager_hash is not None and manager_hash is not None:
         manager_member = (
             db.query(TenantMember)
             .filter(
                 TenantMember.tenant_id == tenant_id,
-                TenantMember.user_hash == body.manager_hash,
+                TenantMember.user_hash == manager_hash,
                 TenantMember.role.in_(["manager", "admin"]),
             )
             .first()
@@ -196,7 +201,10 @@ def update_team(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="manager_hash must reference an existing manager or admin in this tenant",
             )
-        team.manager_hash = body.manager_hash
+        team.manager_hash = manager_hash
+
+    if body.manager_hash is not None and manager_hash is None:
+        team.manager_hash = None
 
     db.commit()
     db.refresh(team)

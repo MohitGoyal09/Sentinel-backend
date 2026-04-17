@@ -1,12 +1,12 @@
 # Sentinel Backend -- AI-Powered Employee Insights
 
-> Detect burnout before it happens. Sentinel analyzes behavioral metadata from workplace tools to surface individual risk, hidden talent, and team-level contagion -- without ever reading message content.
+> Detect burnout before it happens. Sentinel uses a hybrid model: metadata-first behavioral analytics plus opt-in sentiment classification (text never stored) to surface individual risk, hidden talent, and team-level contagion.
 
 ## Overview
 
-Sentinel is a FastAPI backend that powers an AI-driven employee wellbeing platform. It ingests behavioral metadata (commit timestamps, meeting frequency, response patterns) from GitHub, Slack, Google Calendar, and Gmail, then runs three analytical engines to produce actionable insights for managers and HR leaders.
+Sentinel is a FastAPI backend that powers an AI-driven employee wellbeing platform. It ingests behavioral metadata (commit timestamps, meeting frequency, response patterns) from GitHub, Slack, Google Calendar, and Gmail, then runs three analytical engines and optional sentiment classification to produce actionable insights for managers and HR leaders.
 
-The system operates under a strict privacy-first constraint: **no message content is stored**. All analysis runs on metadata patterns, timestamps, and interaction graphs. Identity data is encrypted and separated from analytics data by design.
+The system operates under a strict privacy-first constraint: **no message content is stored**. Core risk analysis runs on metadata patterns, timestamps, and interaction graphs; opt-in sentiment classification uses transient text processing and stores only label/confidence outputs. Identity data is encrypted and separated from analytics data by design.
 
 ---
 
@@ -318,6 +318,56 @@ curl http://localhost:8000/health
 # {"status":"healthy","version":"1.0.0"}
 ```
 
+### Create Supabase Schema (Required for New Projects)
+
+If this is a fresh Supabase project, create the backend schemas and tables before running the app in production/staging.
+
+1) Set `DATABASE_URL` to your Supabase **Session mode** Postgres URI (from Supabase Settings > Database):
+
+```bash
+export DATABASE_URL="postgresql+psycopg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
+```
+
+2) Run Alembic migrations (this creates both `analytics` and `identity` schemas and all tables):
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+3) Verify schemas/tables in Supabase SQL Editor:
+
+```sql
+-- Schemas
+select schema_name
+from information_schema.schemata
+where schema_name in ('analytics', 'identity');
+
+-- Example table checks
+select table_schema, table_name
+from information_schema.tables
+where table_schema in ('analytics', 'identity')
+order by table_schema, table_name;
+```
+
+4) Optional: re-run safely after pulling new migrations:
+
+```bash
+alembic upgrade head
+```
+
+5) Optional reset (non-production only):
+
+```bash
+alembic downgrade base
+alembic upgrade head
+```
+
+Notes:
+- `001_initial_schema.py` creates `analytics` and `identity` schemas explicitly.
+- Keep app and migration environments aligned (`DATABASE_URL` must point to the same Supabase project).
+- For local demo/dev you can still rely on auto table creation on startup, but Supabase deployments should use Alembic.
+
 ### Seed Demo Data
 
 ```bash
@@ -394,9 +444,9 @@ All endpoints are prefixed with `/api/v1`. Full interactive docs are available a
 
 ## Design Decisions
 
-### 1. Metadata-Only Analysis
+### 1. Hybrid, Metadata-First Analysis
 
-Sentinel never reads message content. All signals (velocity, entropy, belongingness) are derived from timestamps, interaction counts, and graph topology. This makes deployment possible without accessing sensitive communications.
+Sentinel is metadata-first for core risk signals (velocity, entropy, belongingness) derived from timestamps, interaction counts, and graph topology. For organizations that opt in, sentiment is classified from message text in-memory and only the score is stored. This preserves privacy while adding a secondary confirmation signal.
 
 ### 2. Two-Vault Privacy (No FK Between Analytics and Identity)
 
@@ -413,9 +463,9 @@ The Safety Valve does not flag burnout from a single metric. Risk classification
 - **Belongingness** < threshold (social withdrawal via interaction analysis)
 - **Circadian Entropy** > threshold (schedule chaos via Shannon entropy)
 
-### 5. Connection Index as Behavioral Sentiment Proxy
+### 5. Connection Index as Primary Behavioral Signal
 
-Rather than analyzing message tone (which would require reading content), Sentinel uses interaction graph metrics (reply rate, mention frequency, response latency) as a proxy for engagement and belongingness.
+Sentinel uses interaction graph metrics (reply rate, mention frequency, response latency) as the primary engagement signal because behavioral withdrawal is an earlier indicator. Opt-in sentiment is used as a supplemental layer, not the sole decision driver.
 
 ### 6. Opt-In Sentiment Analysis (Text Classified, Never Stored)
 
@@ -593,11 +643,13 @@ Both `SUPABASE_URL` and `SUPABASE_KEY` must be set in `.env`. The Supabase clien
 gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
-Set `ENVIRONMENT=production` to enable HSTS headers. Use Alembic for schema migrations in production:
+Set `ENVIRONMENT=production` to enable HSTS headers. Use Alembic for schema migrations in production (including initial Supabase schema bootstrap):
 
 ```bash
 alembic upgrade head
 ```
+
+If this is a new Supabase project, run the full flow in **Create Supabase Schema (Required for New Projects)** above.
 
 ---
 
